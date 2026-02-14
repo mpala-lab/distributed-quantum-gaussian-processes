@@ -176,9 +176,11 @@ This implementation is designed for research in:
 
 If you use this code in your research, please cite:
 ```
-[Your paper citation here]
+bibtex
+@inproceedings{gandhi2026distributed,
+  title={Distributed Quantum Gaussian Processes for Multi-Agent Systems},
+  author={Gandhi, Meet and Kontoudis, George P},
+  booktitle={International Conference on Autonomous Agents and Multiagent Systems (AAMAS)},
+  year={2026}
+}
 ```
-
-## 📜 License
-
-MIT License - see LICENSE file for details
