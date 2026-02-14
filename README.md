@@ -176,7 +176,6 @@ This implementation is designed for research in:
 
 If you use this code in your research, please cite:
 ```
-bibtex
 @inproceedings{gandhi2026distributed,
   title={Distributed Quantum Gaussian Processes for Multi-Agent Systems},
   author={Gandhi, Meet and Kontoudis, George P},
