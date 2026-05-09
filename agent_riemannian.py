@@ -137,7 +137,7 @@ class RiemannianAgent:
                  encoding_type='yz_cx', kernel_type='fidelity', measurement='XYZ',
                  outer_kernel='gaussian', outer_kernel_params=None, regularization=None,
                  riemannian_lr=0.01, riemannian_method='gradient_descent', 
-                 riemannian_beta=0.9):
+                 riemannian_beta=0.9, noise_lower_bound=1e-8):
         """
         Initialize Riemannian Agent.
         
@@ -173,6 +173,7 @@ class RiemannianAgent:
         self.rho = rho
         self.L = L
         self.q_kernel = q_kernel
+        self.noise_lower_bound = noise_lower_bound
         self.use_parameter_shift = use_parameter_shift
         self.num_workers = num_workers
         self.shift_value = shift_value
@@ -316,14 +317,27 @@ class RiemannianAgent:
         Train and update using Riemannian optimization.
         
         Args:
-            z: Global parameter (will be projected to manifold)
+            z: Global parameter vector [theta_1, ..., theta_k, noise_var]
+               Last element is noise variance (sigma_n^2), rest are circuit params
             psi_i: Dual variable for this agent
             
         Returns:
-            tuple: (theta_i, psi_i, nll_loss, condition_number)
+            tuple: (theta_i, psi_i, nll_loss, condition_number, nll_components)
         """
         start_time = time.time()
-        print(f"Agent {self.agent_id} - Starting Riemannian train_and_update")
+        print(f"Agent {self.agent_id} - Starting Riemannian train_and_update with extended z")
+        
+        # Extract noise variance from z (last element)
+        # z = [theta_1, ..., theta_k, sigma_n^2]
+        if len(z) > 1:
+            noise_var = z[-1]  # Last element is noise variance
+            z_circuit = z[:-1]  # Circuit parameters
+            print(f"Agent {self.agent_id} - Extracted noise_var={noise_var:.6f} from z")
+        else:
+            # Fallback: only circuit parameters, use default noise
+            z_circuit = z
+            noise_var = self.noise_std**2
+            print(f"Agent {self.agent_id} - z has only 1 element, using default noise_var={noise_var:.6f}")
         
         # Initialize quantum kernel if needed
         if self.q_kernel is None:
@@ -370,12 +384,12 @@ class RiemannianAgent:
         else:
             q_kernel = self.q_kernel
         
-        # Set up Riemannian framework
-        num_parameters = len(z)
+        # Set up Riemannian framework (only for circuit parameters, not noise)
+        num_parameters = len(z_circuit)  # Only circuit parameters go on manifold
         self._setup_riemannian_framework(num_parameters)
         
-        # Project z to manifold
-        z_manifold = self.manifold.wrap_to_manifold(z)
+        # Project only circuit parameters to manifold (noise is handled separately)
+        z_manifold = self.manifold.wrap_to_manifold(z_circuit)
         q_kernel._parameters = z_manifold
         
         # Compute kernel matrix and derivatives
@@ -406,8 +420,8 @@ class RiemannianAgent:
         block_time = time.time() - block_start
         print(f"Agent {self.agent_id} - Riemannian quantum computation: {block_time:.4f}s")
         
-        # Add noise and solve system (same as original)
-        C_noise = C + self.noise_std**2 * np.eye(C.shape[0])
+        # Add noise and solve system (using extracted noise_var)
+        C_noise = C + noise_var * np.eye(C.shape[0])
         condition_number = np.linalg.cond(C)
         
         # Matrix inversion
@@ -435,7 +449,18 @@ class RiemannianAgent:
             np.sum(bracket_matrix * dCdTheta[i].T) for i in range(dCdTheta.shape[0])
         ])
         
+        # Compute gradient w.r.t. noise variance
+        # ∂L/∂σ_n^2 = 1/2 * trace(C_inv) - 1/2 * y^T C_inv^2 y
+        quadratic_term_noise = self.Y_sub.T @ C_inv @ C_inv_y
+        # Handle both 1D and 2D Y_sub by converting to scalar safely
+        if np.ndim(quadratic_term_noise) > 0:
+            quadratic_term_noise = float(quadratic_term_noise.flat[0])
+        else:
+            quadratic_term_noise = float(quadratic_term_noise)
+        grad_noise = 0.5 * np.trace(C_inv) - 0.5 * quadratic_term_noise
+        
         L_theta_i = np.round(dLdTheta, 4)
+        grad_noise_rounded = np.round(grad_noise, 4)
         
         # Compute NLL loss
         try:
@@ -470,16 +495,53 @@ class RiemannianAgent:
                 'total': float('inf')
             }
         
-        print(f"Agent {self.agent_id} - Riemannian L_theta_i: {L_theta_i}")
+        print(f"Agent {self.agent_id} - Riemannian L_theta_i: {L_theta_i}, L_noise_i: {grad_noise_rounded}")
         
-        # RIEMANNIAN ADMM UPDATE
+        # RIEMANNIAN ADMM UPDATE (separate circuit and noise)
         print(f"Agent {self.agent_id} - Using Riemannian ADMM updates")
         
-        # Update theta using Riemannian ADMM
-        theta_i = self.riemannian_admm.update_theta(z_manifold, L_theta_i, psi_i, self.L, self.riemannian_optimizer)
+        # Extract circuit and noise components from psi_i
+        psi_i_circuit = psi_i[:-1]  # Circuit parameters
+        psi_i_noise = psi_i[-1]      # Noise variance
         
-        # Update psi using Riemannian ADMM  
-        psi_i = self.riemannian_admm.update_psi(psi_i, theta_i, z_manifold)
+        # Update theta using Riemannian ADMM (circuit parameters only)
+        theta_i_circuit = self.riemannian_admm.update_theta(z_manifold, L_theta_i, psi_i_circuit, self.L, self.riemannian_optimizer)
+        
+        # Update psi using Riemannian ADMM (circuit parameters only)
+        psi_i_circuit = self.riemannian_admm.update_psi(psi_i_circuit, theta_i_circuit, z_manifold)
+        
+        # Update noise variance using standard ADMM with CONSTRAINT HANDLING (Euclidean, not Riemannian)
+        # For constrained optimization, we use projection: clip BEFORE psi update to prevent unbounded psi growth
+        
+        # Step 1: Compute unconstrained update
+        # theta_noise = z_noise - (grad_noise + psi_noise) / (rho * L)
+        theta_i_noise_unconstrained = z[-1] - (grad_noise + psi_i_noise) / (self.rho * self.L)
+        
+        # Step 2: Project to feasible region [noise_lower_bound, 1.0]
+        theta_i_noise = np.clip(theta_i_noise_unconstrained, self.noise_lower_bound, 1.0)
+        
+        # Step 3: Update psi with DAMPING when hitting constraints
+        # If we had to clip, it means we're at a boundary; reduce psi growth to prevent unbounded accumulation
+        at_lower_bound = (theta_i_noise == self.noise_lower_bound) and (theta_i_noise_unconstrained < self.noise_lower_bound)
+        at_upper_bound = (theta_i_noise == 1.0) and (theta_i_noise_unconstrained > 1.0)
+        
+        if at_lower_bound or at_upper_bound:
+            # At boundary: use damped psi update to prevent divergence
+            # Only update psi if we're moving away from boundary
+            psi_update = self.rho * (theta_i_noise - z[-1])
+            if (at_lower_bound and psi_update > 0) or (at_upper_bound and psi_update < 0):
+                # Moving away from boundary is OK, update normally
+                psi_i_noise = psi_i_noise + psi_update
+            else:
+                # Trying to stay at boundary or push harder - dampen psi growth
+                psi_i_noise = psi_i_noise + 0.1 * psi_update  # Damping factor
+        else:
+            # Interior: standard update
+            psi_i_noise = psi_i_noise + self.rho * (theta_i_noise - z[-1])
+        
+        # Reconstruct full theta_i and psi_i with circuit and noise components
+        theta_i = np.concatenate([theta_i_circuit, [theta_i_noise]])
+        psi_i = np.concatenate([psi_i_circuit, [psi_i_noise]])
         
         # Round for display
         theta_i = np.round(theta_i, 4)
@@ -488,4 +550,9 @@ class RiemannianAgent:
         total_time = time.time() - start_time
         print(f"Agent {self.agent_id} - Riemannian total time: {total_time:.4f}s")
         
-        return theta_i, psi_i, nll_loss, condition_number, nll_components
+        # Return augmented gradient [theta_grad, noise_grad] for ADMM consensus
+        gradient_augmented = np.concatenate([L_theta_i, [grad_noise_rounded]])
+        print(f"Agent {self.agent_id} - Returning augmented gradient: circuit={L_theta_i}, noise={grad_noise_rounded}")
+        
+        # Return augmented tuple with gradient_augmented
+        return theta_i, psi_i, nll_loss, condition_number, nll_components, gradient_augmented

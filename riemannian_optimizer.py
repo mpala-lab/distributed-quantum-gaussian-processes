@@ -426,3 +426,30 @@ def create_riemannian_framework(num_parameters: int, learning_rate: float = 0.01
     admm = RiemannianADMM(manifold, rho)
     
     return manifold, optimizer, admm
+
+
+# Example usage and testing functions
+def test_torus_manifold():
+    """Test basic torus manifold operations."""
+    print("Testing Torus Manifold Operations...")
+    
+    manifold = TorusManifold(3)
+    
+    # Test wrapping
+    x = np.array([3.5*np.pi, -2.1*np.pi, 0.5*np.pi])
+    x_wrapped = manifold.wrap_to_manifold(x)
+    print(f"Original: {x}")
+    print(f"Wrapped:  {x_wrapped}")
+    
+    # Test distance
+    y = np.array([0.1*np.pi, 0.2*np.pi, -0.3*np.pi])
+    dist = manifold.distance(x_wrapped, y)
+    print(f"Distance: {dist:.4f}")
+    
+    # Test exp/log maps
+    v = np.array([0.1, -0.2, 0.3])
+    y_exp = manifold.exp_map(x_wrapped, v)
+    v_log = manifold.log_map(x_wrapped, y_exp)
+    print(f"Original vector: {v}")
+    print(f"Recovered vector: {v_log}")
+    print(f"Difference: {np.linalg.norm(v - v_log):.6f}")

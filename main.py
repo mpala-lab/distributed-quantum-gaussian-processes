@@ -124,13 +124,16 @@ def create_quantum_kernel(num_qubits, num_features=1, num_layers=2, use_paramete
         )
         # print(f"Using FidelityKernel (quantum state fidelity)")
     elif kernel_type == 'projected':
-        # For ProjectedQuantumKernel, we pass outer_kernel as a string
-        # and let squlearn handle kernel creation with defaults
-        # (outer_kernel_params are not directly supported in squlearn's ProjectedQuantumKernel)
+        # Set default outer kernel parameters if not provided
+        if outer_kernel_params is None:
+            outer_kernel_params = {}
+        
+        # ProjectedQuantumKernel: Do NOT unpack outer_kernel_params as kwargs
+        # The outer kernel and its parameters are handled internally by the kernel
         q_kernel = ProjectedQuantumKernel(
             encoding_circuit=enc_circ,
-            measurement=measurement,  # Use the configurable measurement parameter
-            outer_kernel=outer_kernel,  # Pass as string, squlearn creates kernel with defaults
+            measurement=measurement,
+            outer_kernel=outer_kernel,
             executor=executor,
             parameter_seed=0,
             regularization=regularization
@@ -138,6 +141,8 @@ def create_quantum_kernel(num_qubits, num_features=1, num_layers=2, use_paramete
         print(f"Using ProjectedQuantumKernel with {measurement} measurement and {outer_kernel} outer kernel")
         if regularization is not None:
             print(f"Regularization: {regularization}")
+        if outer_kernel_params:
+            print(f"Outer kernel parameters: {outer_kernel_params}")
             
     else:
         raise ValueError(f"Unknown kernel type: {kernel_type}. Supported: 'fidelity', 'projected'")
@@ -195,10 +200,22 @@ def generate_quantum_gp_data(num_samples, input_dim, num_qubits, num_layers=2,
     # Create quantum kernel
     q_kernel = create_quantum_kernel(num_qubits, input_dim, num_layers, use_parameter_shift, encoding_type, kernel_type, measurement, outer_kernel, outer_kernel_params, regularization)
     
-    # Get num_parameters from encoding circuit (ProjectedQuantumKernel.num_parameters is None until initialized)
-    num_kernel_params = q_kernel.num_parameters if q_kernel.num_parameters is not None else q_kernel.encoding_circuit.num_parameters
+    # For ProjectedQuantumKernel, num_parameters might be None until first evaluation
+    # Do a dummy evaluation with a small sample to initialize the kernel
+    if q_kernel.num_parameters is None:
+        try:
+            X_dummy = np.random.uniform(data_range[0], data_range[1], size=(2, input_dim))
+            _ = q_kernel.evaluate(X_dummy, X_dummy)
+        except Exception as e:
+            print(f"Warning: Dummy evaluation for kernel initialization failed: {e}")
+            print("Attempting to continue without pre-initialization...")
     
     # Set kernel parameters if provided, otherwise use random with fixed seed for consistency
+    # Get num_parameters safely - if still None, use encoding circuit parameters
+    num_kernel_params = q_kernel.num_parameters
+    if num_kernel_params is None:
+        num_kernel_params = q_kernel.encoding_circuit.num_parameters
+    
     if kernel_params is not None:
         if len(kernel_params) != num_kernel_params:
             raise ValueError(f"Expected {num_kernel_params} parameters, got {len(kernel_params)}")
@@ -1310,37 +1327,37 @@ Agent Sample Counts:
 
 def process_agent_training(agent_data):
     """
-    Helper function for ProcessPoolExecutor that recreates RiemannianAgent and trains it.
+    Helper function for ProcessPoolExecutor that recreates Agent and trains it.
     This avoids pickling issues with complex quantum objects.
-    Uses a process-global quantum kernel for maximum efficiency.
+    Now uses a process-global quantum kernel for maximum efficiency.
     
     Args:
-        agent_data: tuple containing (agent_id, X_sub, Y_sub, num_qubits, noise_std, rho, L, z, psi_i, 
-                   use_parameter_shift, num_features, num_layers, num_workers, shift_value, encoding_type, 
-                   kernel_type, measurement, riemannian_lr, riemannian_method, riemannian_beta, outer_kernel, 
-                   outer_kernel_params, regularization)
+        agent_data: tuple containing (agent_id, X_sub, Y_sub, num_qubits, noise_std, rho, L, z, psi_i, use_parameter_shift, num_features, num_layers, num_workers, shift_value, encoding_type, kernel_type, measurement, riemannian_lr, riemannian_method, riemannian_beta, outer_kernel, outer_kernel_params, regularization)
     
     Returns:
         tuple: (theta_i, psi_i, nll_loss, condition_number, nll_components)
     """
-    (agent_id, X_sub, Y_sub, num_qubits, noise_std, rho, L, z, psi_i, 
-     use_parameter_shift, num_features, num_layers, num_workers, shift_value, encoding_type, 
-     kernel_type, measurement, riemannian_lr, riemannian_method, riemannian_beta, outer_kernel, 
-     outer_kernel_params, regularization) = agent_data
+    agent_id, X_sub, Y_sub, num_qubits, noise_std, rho, L, z, psi_i, use_parameter_shift, num_features, num_layers, num_workers, shift_value, encoding_type, kernel_type, measurement, riemannian_lr, riemannian_method, riemannian_beta, outer_kernel, outer_kernel_params, regularization, noise_lower_bound = agent_data
     
     # Get quantum kernel for this process (created only once per process, reused across iterations)
-    q_kernel = get_or_create_process_kernel(num_qubits, num_features, num_layers, use_parameter_shift, 
-                                           encoding_type, kernel_type, measurement, outer_kernel, 
-                                           outer_kernel_params, regularization)
+    q_kernel = get_or_create_process_kernel(num_qubits, num_features, num_layers, use_parameter_shift, encoding_type, kernel_type, measurement, outer_kernel, outer_kernel_params, regularization)
     
-    # Create RiemannianAgent instance
+    # Print parameter shift usage information
+    if use_parameter_shift:
+        # print(f"Process {os.getpid()} - Agent {agent_id} - Using parameter shift (parallel evaluation enabled)")
+        pass
+    else:
+        # print(f"Process {os.getpid()} - Agent {agent_id} - Using autodiff")
+        pass
+    
+    # Always use the Riemannian agent path.
     agent = RiemannianAgent(
-        agent_id=agent_id, 
-        X_sub=X_sub, 
-        Y_sub=Y_sub, 
-        num_qubits=num_qubits, 
-        noise_std=noise_std, 
-        rho=rho, 
+        agent_id=agent_id,
+        X_sub=X_sub,
+        Y_sub=Y_sub,
+        num_qubits=num_qubits,
+        noise_std=noise_std,
+        rho=rho,
         L=L,
         q_kernel=q_kernel,
         use_parameter_shift=use_parameter_shift,
@@ -1356,10 +1373,972 @@ def process_agent_training(agent_data):
         riemannian_lr=riemannian_lr,
         riemannian_method=riemannian_method,
         riemannian_beta=riemannian_beta,
+        noise_lower_bound=noise_lower_bound
     )
     
     # Train and update the agent
     return agent.train_and_update(z, psi_i)
+
+# ===========================
+# PREDICTION METHOD HELPERS
+# ===========================
+
+def extract_noise_level_quantum(agent_state):
+    """
+    Extract noise level from a stored quantum agent state.
+    
+    Args:
+        agent_state: Dict containing stored agent covariance state
+        
+    Returns:
+        Noise variance (scalar float)
+    """
+    try:
+        # noise_level is stored in the agent_state dict
+        if 'noise_std' in agent_state:
+            noise_std = agent_state['noise_std']
+            return noise_std ** 2
+        elif 'noise_var' in agent_state:
+            return agent_state['noise_var']
+        else:
+            # Fallback: estimate from kernel if available
+            print(f"    WARNING: Noise level not found in agent_state, using default 1e-6")
+            return 1e-6
+    except (KeyError, AttributeError) as e:
+        print(f"    WARNING: Error extracting noise level ({e}), using default 1e-6")
+        return 1e-6
+
+def predict_rbcm_aggregation_quantum(agent_states, X_test, noise_std, X_train=None, y_train_std=None, consensus_theta=None):
+    """
+    Make predictions using rBCM (Robust Bayesian Committee Machine) aggregation for quantum GPs.
+    
+    Implements the rBCM method from the reference paper with aggregation in NOISY (target) space,
+    exactly matching the classical baseline and reference paper formulation.
+    
+    FAIRNESS FIXES:
+    ===============
+    Concern 1 (Noise Flexibility): Classical extracts per-agent noise, quantum uses global noise_std.
+      - Current: Quantum uses fixed global noise_std (applied uniformly to all agents).
+      - Limitation: Less flexible than classical's per-agent noise tuning.
+      - Mitigation: Both start from same noise_std, ensuring baseline fairness.
+    
+    Concern 2 (Normalization Scaling): FIXED ✓
+      - Issue: Classical scales prior variance by y_train_std² when normalize_y=True.
+      - Fix: Quantum now applies same scaling: sigma2_prior *= (y_train_std ** 2)
+      - Result: Fair comparison when data is normalized.
+    
+    Concern 3 (Reference Agent for Prior): FIXED FOR ADMM ✓
+      - ADMM consensus: Use trained consensus hyperparameters (theta) for GLOBAL prior variance.
+      - This prior is shared by ALL agents (not per-agent).
+      - FACT-GP (independent agents): Falls back to per-agent priors if consensus_theta is None.
+      - Result: Fair comparison where agents compare against common reference.
+    
+    Paper Formulation (Equations 10-11):
+    - Prior variance: σ²* = k(x*, x*) + σ²_ε (noisy space)
+    - Entropy weights: βᵢ = 0.5[log σ²* - log σ²ᵢ(x*)]
+    - Mean: μ_rBCM(x*) = σ²_rBCM(x*) · Σ(βᵢ σ⁻²ᵢ(x*) μᵢ(x*))
+    - Precision: σ⁻²_rBCM(x*) = Σ(βᵢ σ⁻²ᵢ(x*)) + (1 - Σβᵢ) σ⁻²*
+    
+    All computations occur in NOISY space (target predictive distribution space), not latent space.
+    This matches sklearn's GaussianProcessRegressor behavior with WhiteKernel.
+    
+    Args:
+        agent_states: List of stored quantum agent states
+        X_test: Test input data (N_test, D)
+        noise_std: Noise standard deviation
+        X_train: Training data for prior variance computation (optional)
+        y_train_std: Target standard deviation (for Concern 2: fair scaling with classical baseline)
+        consensus_theta: Consensus hyperparameters from ADMM training (for ADMM/apxGP methods)
+                        If provided, uses global prior variance. If None, falls back to per-agent priors (FACT-GP).
+    
+    Returns:
+        Tuple of (y_pred_mean, y_pred_std, prediction_time)
+        where y_pred_std is the standard deviation in noisy space (includes observation noise)
+    """
+    if y_train_std is None:
+        y_train_std = 1.0
+    
+    print(f"\n{'='*60}")
+    print("rBCM PREDICTION AGGREGATION (Quantum GP)")
+    print(f"{'='*60}")
+    print(f"  Number of local agents: {len(agent_states)}")
+    print(f"  Test data: {X_test.shape}")
+    print(f"  Aggregation: Entropy-based weighting with prior variance injection")
+    print(f"  Observation noise std: {noise_std:.6f}")
+    print(f"  Training target std (for scaling fairness): {y_train_std:.6f}")
+    
+    start_time = time.time()
+    
+    n_agents = len(agent_states)
+    n_test = X_test.shape[0]
+    noise_var = noise_std ** 2
+    
+    # CONCERN 3 FIX (ADMM): Use GLOBAL prior variance from consensus hyperparameters
+    # For ADMM-trained agents: all agents share consensus theta, so single global prior
+    # For FACT-GP (independent agents): consensus_theta is None, fall back to per-agent priors
+    
+    if consensus_theta is not None:
+        # ADMM/apxGP: Use global prior computed from consensus hyperparameters
+        print(f"\n  Computing GLOBAL prior variance from consensus hyperparameters (ADMM/apxGP)...")
+        
+        try:
+            # Get the reference quantum kernel and assign consensus parameters
+            reference_agent_state = agent_states[0]
+            q_kernel_consensus = reference_agent_state['q_kernel']
+            q_kernel_consensus.assign_parameters(consensus_theta)
+            
+            # Compute global prior using consensus kernel
+            K_test_test_global = q_kernel_consensus.evaluate(X_test, X_test)
+            k_diag_global = np.diag(K_test_test_global)
+            sigma2_prior_global = (k_diag_global + noise_var) * (y_train_std ** 2)
+            
+            # Use same global prior for all agents
+            sigma2_prior_per_agent = np.tile(sigma2_prior_global, (n_agents, 1))  # Shape: (n_agents, n_test)
+            
+            print(f"    Global prior (scaled by y_std²={y_train_std**2:.6f}): min={np.min(sigma2_prior_global):.6f}, mean={np.mean(sigma2_prior_global):.6f}, max={np.max(sigma2_prior_global):.6f}")
+            print(f"    This GLOBAL prior is shared by all {n_agents} agents")
+            
+        except Exception as e:
+            print(f"    WARNING: Consensus prior computation failed ({e}), falling back to per-agent priors")
+            consensus_theta = None  # Force fallback
+    
+    if consensus_theta is None:
+        # FACT-GP or fallback: Compute PER-AGENT prior variance using each agent's own kernel
+        # This is more principled: agent i compares its uncertainty to its own prior (not a consensus prior)
+        # Each agent independently weighs its prediction based on how confident its own prior is
+        print(f"\n  Computing PER-AGENT prior variance (FACT-GP or fallback)...")
+        
+        sigma2_prior_per_agent = []  # List of (n_test,) arrays, one per agent
+        
+        for i, agent_state in enumerate(agent_states):
+            q_kernel = agent_state['q_kernel']
+            # CONCERN 2 FIX (Approach 1): Use per-agent y_train_std, not global
+            y_agent_std = agent_state['y_train_std']
+            try:
+                K_test_test_i = q_kernel.evaluate(X_test, X_test)
+                k_diag_i = np.diag(K_test_test_i)
+                # Agent i's prior variance: σ²_i,* = k_i(x*,x*) + σ²_ε
+                sigma2_prior_i_normalized = k_diag_i + noise_var
+                # Scale by agent-specific y_train_std² (CONCERN 2 FIX: per-agent scaling)
+                sigma2_prior_i = sigma2_prior_i_normalized * (y_agent_std ** 2)
+                sigma2_prior_per_agent.append(sigma2_prior_i)
+                
+                if i == 0:
+                    print(f"    Agent 1 prior (scaled by y_std²={y_agent_std**2:.6f}): min={np.min(sigma2_prior_i):.6f}, mean={np.mean(sigma2_prior_i):.6f}, max={np.max(sigma2_prior_i):.6f}")
+            except Exception as e:
+                print(f"    WARNING: Agent {i+1} prior variance computation failed: {e}")
+                sigma2_prior_per_agent.append(np.ones(n_test))
+        
+        sigma2_prior_per_agent = np.array(sigma2_prior_per_agent)  # Shape: (n_agents, n_test)
+        print(f"    Per-agent prior variance computed for all {n_agents} agents")
+        print(f"    Prior variance range across all agents: min={np.min(sigma2_prior_per_agent):.6f}, max={np.max(sigma2_prior_per_agent):.6f}")
+    
+    print(f"\n  Computing predictions from {n_agents} local agents...")
+    local_means = []
+    local_vars = []  # Will store NOISY variances (latent + noise)
+    
+    for i, agent_state in enumerate(agent_states):
+        agent_id = agent_state['agent_id']
+        X_agent = agent_state['X_agent']
+        alpha = agent_state['alpha']
+        L = agent_state['L']
+        q_kernel = agent_state['q_kernel']
+        # CONCERN 2 FIX (Approach 1): Use per-agent y_train_std
+        y_agent_std = agent_state['y_train_std']
+        
+        try:
+            # Compute K(X_test, X_agent)
+            K_test_agent = q_kernel.evaluate(X_test, X_agent)
+            
+            # Local mean: K_test_agent @ alpha
+            mu_i = K_test_agent @ alpha
+            local_means.append(mu_i)
+            
+            # Local latent variance: diag(K_test_test) - ||solve(L, K_test_agent.T)||²
+            K_test_test_i = q_kernel.evaluate(X_test, X_test)
+            
+            v = np.linalg.solve(L, K_test_agent.T)
+            sigma2_i_latent = np.diag(K_test_test_i) - np.sum(v**2, axis=0)
+            sigma2_i_latent = np.maximum(sigma2_i_latent, 1e-10)
+            
+            # Convert latent variance to NOISY variance: σ²ᵢ = σ²ᵢ_latent + σ²_ε
+            # This gives us the full predictive variance, matching sklearn.GaussianProcessRegressor behavior
+            sigma2_i = sigma2_i_latent + noise_var
+            
+            # CRITICAL FIX: Scale local variance by y_agent_std² to match prior scaling
+            # Classical GP: gp.predict() returns variance already scaled to original Y scale
+            # Quantum GP: kernel variance is in normalized space, must scale to original space
+            # Without this, entropy weights β are massively distorted (log(scaled_prior) - log(unscaled_local))
+            # CONCERN 2 FIX (Approach 1): Use per-agent y_train_std, not global
+            sigma2_i_scaled = sigma2_i * (y_agent_std ** 2)
+            local_vars.append(sigma2_i_scaled)
+            
+            print(f"    Agent {agent_id+1}: mean ∈ [{mu_i.min():.4f}, {mu_i.max():.4f}], noisy std (scaled by y_std²={y_agent_std**2:.6f}) ∈ [{np.sqrt(sigma2_i_scaled.min()):.4f}, {np.sqrt(sigma2_i_scaled.max()):.4f}]")
+            
+        except Exception as e:
+            print(f"    WARNING: Agent {agent_id+1} prediction failed ({e}), using per-agent prior variance as fallback")
+            local_means.append(np.zeros(n_test))
+            local_vars.append(np.maximum(sigma2_prior_per_agent[i], 1e-10))
+    
+    # Convert to arrays: shape (n_agents, n_test)
+    local_means = np.array(local_means)
+    local_vars = np.array(local_vars)  # NOISY variances for entropy computation and aggregation
+    
+    # ========== VECTORIZED ENTROPY-WEIGHTED AGGREGATION IN NOISY SPACE ==========
+    # Directly aggregate in noisy (target predictive) space, matching the paper and classical baseline
+    print(f"\n  Computing entropy-based weights (vectorized, PER-AGENT PRIORS, in noisy space)...")
+    
+    # Compute entropy weights: βᵢ = 0.5[log σ²_i,* - log σ²ᵢ]
+    # CONCERN 3 FIX: Each agent i compares its prior σ²_i,* to its uncertainty σ²ᵢ
+    # This is more fair and doesn't depend on any single reference agent
+    with np.errstate(divide='ignore', invalid='ignore'):
+        beta = 0.5 * (np.log(sigma2_prior_per_agent) - np.log(local_vars))
+        beta = np.nan_to_num(beta, nan=0.0, posinf=0.0, neginf=0.0)
+    
+    sum_beta = np.sum(beta, axis=0)
+    print(f"  Entropy weights β statistics (per-agent priors):")
+    print(f"    min={np.min(beta):.6f}, mean={np.mean(beta):.6f}, max={np.max(beta):.6f}")
+    print(f"  Sum Σβᵢ statistics (BEFORE normalization):")
+    print(f"    min={np.min(sum_beta):.6f}, mean={np.mean(sum_beta):.6f}, max={np.max(sum_beta):.6f}")
+    
+    # ISSUE #2 FIX: Normalize entropy weights to ensure Σβᵢ ≤ 1 (paper constraint)
+    # Prevents negative prior weights and ensures valid probabilistic interpretation
+    # Reference: classical_gp_comparison.py lines 1719-1722
+    beta_sum_clipped = np.minimum(sum_beta, 1.0)
+    scale_factor = np.where(sum_beta > 1e-10, beta_sum_clipped / (sum_beta + 1e-10), 1.0)
+    beta = beta * scale_factor[np.newaxis, :]
+    sum_beta = np.sum(beta, axis=0)  # Recompute after normalization
+    
+    print(f"  Sum Σβᵢ statistics (AFTER normalization):")
+    print(f"    min={np.min(sum_beta):.6f}, mean={np.mean(sum_beta):.6f}, max={np.max(sum_beta):.6f}")
+    print(f"  Prior weight (1 - Σβᵢ):")
+    prior_weight = 1 - sum_beta
+    print(f"    min={np.min(prior_weight):.6f}, mean={np.mean(prior_weight):.6f}, max={np.max(prior_weight):.6f}")
+    
+    # Precision-weighted aggregation (vectorized) in noisy space
+    # σ⁻²ᵢ from noisy variances
+    sigma2_inv = 1.0 / (local_vars + 1e-10)
+    
+    # Weighted sum: Σ(βᵢ σ⁻²ᵢ μᵢ)
+    weighted_sum = np.sum(beta * sigma2_inv * local_means, axis=0)
+    
+    # Total precision: Σ(βᵢ σ⁻²ᵢ) + (1 - Σβᵢ) σ⁻²*
+    precision_weighted = np.sum(beta * sigma2_inv, axis=0)
+    
+    # ISSUE #1 FIX: Compute correct prior precision based on method
+    # For ADMM (consensus_theta provided): Use GLOBAL prior precision (single value)
+    # For FACT-GP (consensus_theta is None): Use AVERAGE prior precision (per-agent approach)
+    # Reference: classical_gp_comparison.py line 1727 for correct ADMM formula
+    sigma2_prior_inv = 1.0 / (sigma2_prior_per_agent + 1e-10)  # Shape: (n_agents, n_test)
+    
+    if consensus_theta is not None:
+        # ADMM/apxGP: All agents use same global prior, so compute global prior precision directly
+        # σ⁻²* = 1 / σ²* (single global value, broadcast across all agents)
+        global_prior_precision = (1 - sum_beta) / (sigma2_prior_global + 1e-10)
+        prior_precision = global_prior_precision
+        print(f"    Using GLOBAL prior precision for ADMM (all agents share consensus prior)")
+    else:
+        # FACT-GP or fallback: Each agent compares to its own prior, use average
+        # σ⁻²* = mean across agents of (1 / σ²_i,*)
+        avg_prior_precision = np.mean(sigma2_prior_inv, axis=0)
+        prior_precision = (1 - sum_beta) * avg_prior_precision
+        print(f"    Using AVERAGE prior precision for per-agent priors (FACT-GP)")
+    
+    total_precision = precision_weighted + prior_precision
+    
+    # Mean aggregation (same in both spaces)
+    numerator = weighted_sum
+    y_pred_mean = np.where(
+        total_precision > 1e-10,
+        numerator / total_precision,
+        np.mean(local_means, axis=0)
+    )
+    
+    # Variance aggregation in noisy space: σ²_rBCM = 1 / σ⁻²_rBCM
+    max_agent_var = np.max(local_vars, axis=0)
+    y_pred_var = np.where(
+        total_precision > 1e-10,
+        1.0 / (total_precision + 1e-10),
+        max_agent_var  # Conservative: use max agent variance as fallback
+    )
+    
+    y_pred_std = np.sqrt(np.maximum(y_pred_var, 1e-10))
+    
+    prediction_time = time.time() - start_time
+    
+    print(f"\n  Prediction completed in: {prediction_time:.4f}s")
+    print(f"  Aggregated prediction statistics (in noisy space):")
+    print(f"    Mean: {np.mean(y_pred_mean):.6f} ± {np.std(y_pred_mean):.6f}")
+    print(f"    Noisy variance (includes observation noise): min={np.min(y_pred_var):.6f}, mean={np.mean(y_pred_var):.6f}, max={np.max(y_pred_var):.6f}")
+    print(f"    Noisy std: {np.mean(y_pred_std):.6f}")
+    
+    return y_pred_mean, y_pred_std, prediction_time
+
+
+def train_fulldata_gp_quantum(X_train, Y_train, X_test, quantum_kernel_params, 
+                             num_qubits, num_layers, noise_std,
+                             use_parameter_shift=True, encoding_type='yz_cx',
+                             kernel_type='fidelity', measurement='XYZ',
+                             outer_kernel='gaussian', outer_kernel_params=None, 
+                             regularization=None, y_train_std=None):
+    """
+    Train a GP on the full dataset using consensus hyperparameters (full-data method).
+    
+    This method trains a single GP using all training data with the consensus hyperparameters,
+    providing a baseline for comparison with distributed methods.
+    
+    Args:
+        X_train: Full training input data (N_train, D)
+        Y_train: Full training output data (N_train,)
+        X_test: Test input data (N_test, D)
+        quantum_kernel_params: Trained consensus parameters
+        num_qubits: Number of qubits
+        num_layers: Number of layers
+        noise_std: Noise standard deviation
+        use_parameter_shift: Use parameter shift rule
+        encoding_type: Encoding circuit type
+        kernel_type: Quantum kernel type
+        measurement: Measurement operator
+        outer_kernel: Outer kernel type
+        outer_kernel_params: Outer kernel parameters
+        regularization: Regularization technique
+        y_train_std: Target standard deviation (for fair scaling with classical baseline)
+    
+    Returns:
+        Tuple of (y_pred_mean, y_pred_std, prediction_time)
+    """
+    if y_train_std is None:
+        y_train_std = 1.0
+    print(f"\n{'='*60}")
+    print("FULL-DATA GP PREDICTION METHOD")
+    print(f"{'='*60}")
+    print(f"  Training data: {X_train.shape}")
+    print(f"  Test data: {X_test.shape}")
+    print(f"  Using consensus hyperparameters on full dataset")
+    
+    start_time = time.time()
+    
+    # Get input dimension
+    input_dim = X_train.shape[1] if X_train.ndim > 1 else 1
+    
+    # Create quantum kernel with consensus parameters
+    print(f"\n  Creating quantum kernel with consensus parameters...")
+    q_kernel = create_quantum_kernel(
+        num_qubits=num_qubits,
+        num_features=input_dim,
+        num_layers=num_layers,
+        use_parameter_shift=use_parameter_shift,
+        encoding_type=encoding_type,
+        kernel_type=kernel_type,
+        measurement=measurement,
+        outer_kernel=outer_kernel,
+        outer_kernel_params=outer_kernel_params,
+        regularization=regularization
+    )
+    
+    # Set the consensus parameters
+    q_kernel.assign_parameters(quantum_kernel_params)
+    
+    # Compute kernel matrices
+    print(f"  Computing kernel matrices...")
+    
+    try:
+        # K(X_train, X_train)
+        K_train_train = q_kernel.evaluate(X_train, X_train)
+        # K(X_test, X_train)
+        K_test_train = q_kernel.evaluate(X_test, X_train)
+        # K(X_test, X_test)
+        K_test_test = q_kernel.evaluate(X_test, X_test)
+        
+        print(f"    Kernel matrices computed successfully")
+    except Exception as e:
+        print(f"    ERROR computing kernel matrices: {e}")
+        raise
+    
+    # Add noise for numerical stability
+    K_train_train_noisy = K_train_train + (noise_std ** 2) * np.eye(K_train_train.shape[0])
+    jitter = 1e-6
+    K_train_train_noisy += jitter * np.eye(K_train_train.shape[0])
+    
+    # Check condition number
+    cond_num = np.linalg.cond(K_train_train_noisy)
+    print(f"    Training kernel condition number: {cond_num:.2e}")
+    
+    if cond_num > 1e12:
+        print(f"    WARNING: Training kernel matrix is ill-conditioned!")
+    
+    # Solve for predictions using GP predictive equations
+    print(f"  Computing GP predictions...")
+    
+    try:
+        # Solve using Cholesky decomposition
+        L_train = np.linalg.cholesky(K_train_train_noisy)
+        alpha = np.linalg.solve(L_train, Y_train)
+        alpha = np.linalg.solve(L_train.T, alpha)
+        
+        # Predictive mean: mu_test = K_test_train @ alpha
+        y_pred_mean = K_test_train @ alpha
+        
+        # Predictive variance: sigma²_test = diag(K_test_test) - ||solve(L_train, K_test_train.T)||²
+        v = np.linalg.solve(L_train, K_test_train.T)
+        y_pred_var = np.diag(K_test_test) - np.sum(v**2, axis=0)
+        y_pred_var = np.maximum(y_pred_var, 1e-10)
+        
+        print(f"    Cholesky decomposition successful")
+        
+    except np.linalg.LinAlgError as e:
+        print(f"    Cholesky decomposition failed: {e}")
+        print(f"    Falling back to direct matrix inversion...")
+        
+        try:
+            K_train_inv = np.linalg.inv(K_train_train_noisy)
+            alpha = K_train_inv @ Y_train
+            y_pred_mean = K_test_train @ alpha
+            y_pred_var = np.diag(K_test_test - K_test_train @ K_train_inv @ K_test_train.T)
+            y_pred_var = np.maximum(y_pred_var, 1e-10)
+            print(f"    Fallback prediction completed")
+        except np.linalg.LinAlgError as e2:
+            print(f"    ERROR: Both Cholesky and direct inversion failed: {e2}")
+            raise RuntimeError("Kernel matrix is singular. Cannot make predictions.")
+    
+    # CRITICAL FIX: y_pred_var computed above is LATENT variance (function uncertainty) in NORMALIZED space.
+    # Must: (1) Scale to original Y scale by y_train_std²
+    #       (2) Add observation noise (also scaled to original Y scale) to get TARGET variance for NLPD evaluation
+    # This matches sklearn's GaussianProcessRegressor.predict(return_std=True) behavior.
+    # The scaling order is critical: σ²_target = (σ²_latent_normalized * y_train_std²) + (σ²_ε_normalized * y_train_std²)
+    y_pred_var_latent_scaled = y_pred_var * (y_train_std ** 2)
+    noise_var_scaled = (noise_std * y_train_std) ** 2
+    y_pred_var_target = y_pred_var_latent_scaled + noise_var_scaled
+    y_pred_std_target = np.sqrt(np.maximum(y_pred_var_target, 1e-10))
+    
+    prediction_time = time.time() - start_time
+    
+    print(f"  Prediction completed in: {prediction_time:.4f}s")
+    print(f"  Prediction statistics:")
+    print(f"    Mean range: [{y_pred_mean.min():.4f}, {y_pred_mean.max():.4f}]")
+    print(f"    Latent variance (before scaling): [{y_pred_var.min():.6f}, {y_pred_var.max():.6f}]")
+    print(f"    Latent variance (after scaling by y_train_std²={y_train_std**2:.6f}): [{y_pred_var_latent_scaled.min():.6f}, {y_pred_var_latent_scaled.max():.6f}]")
+    print(f"    Latent std range (normalized): [{np.sqrt(y_pred_var).min():.4f}, {np.sqrt(y_pred_var).max():.4f}]")
+    print(f"  CONCERN 3 FIX: Scaled noise from {noise_std**2:.6f} to {noise_var_scaled:.6f}")
+    print(f"    Target std range (for NLPD): [{y_pred_std_target.min():.4f}, {y_pred_std_target.max():.4f}]")
+    
+    return y_pred_mean, y_pred_std_target, prediction_time
+
+def make_predictions_with_method(prediction_method, agent_states, X_train, Y_train, X_test, 
+                                 quantum_kernel_params, num_qubits, num_layers, noise_std,
+                                 use_parameter_shift=True, encoding_type='yz_cx',
+                                 kernel_type='fidelity', measurement='XYZ',
+                                 outer_kernel='gaussian', outer_kernel_params=None, 
+                                 regularization=None, y_train_std=None):
+    """
+    Make predictions using the specified aggregation method.
+    
+    Routes to one of three prediction methods based on `prediction_method`:
+    - 'independent': FACT-GP independent agent aggregation (current/default)
+    - 'full-data': Train GP on full dataset with consensus parameters
+    - 'rbcm': Robust Bayesian Committee Machine entropy-weighted aggregation
+    
+    Args:
+        prediction_method: Method to use ('independent', 'full-data', 'rbcm')
+        agent_states: Stored quantum agent states (used by 'independent' and 'rbcm')
+        X_train: Full training data (used by 'full-data')
+        Y_train: Full training labels (used by 'full-data')
+        X_test: Test data
+        quantum_kernel_params: Consensus hyperparameters
+        num_qubits: Number of qubits
+        num_layers: Number of layers in encoding circuit
+        noise_std: Noise standard deviation
+        use_parameter_shift: Use parameter shift rule
+        encoding_type: Encoding circuit type
+        kernel_type: Quantum kernel type
+        measurement: Measurement operator
+        outer_kernel: Outer kernel type
+        outer_kernel_params: Outer kernel parameters
+        regularization: Regularization technique
+        y_train_std: Target standard deviation (for fair scaling with classical baseline)
+    
+    Returns:
+        Tuple of (y_pred_mean, y_pred_std, prediction_time, prediction_method_used)
+    """
+    # Default y_train_std to 1.0 if not provided
+    if y_train_std is None:
+        y_train_std = 1.0
+    
+    # Extract circuit parameters and optimized noise from extended quantum_kernel_params
+    # quantum_kernel_params = [theta_1, ..., theta_k, sigma_n^2]
+    if len(quantum_kernel_params) > 1:
+        potential_noise_var = quantum_kernel_params[-1]
+        if potential_noise_var < 10.0:  # Reasonable variance bound
+            quantum_kernel_params_circuit = quantum_kernel_params[:-1]
+            noise_var_optimized = quantum_kernel_params[-1]
+            noise_std_optimized = np.sqrt(noise_var_optimized)
+        else:
+            quantum_kernel_params_circuit = quantum_kernel_params
+            noise_std_optimized = noise_std
+    else:
+        quantum_kernel_params_circuit = quantum_kernel_params
+        noise_std_optimized = noise_std
+    
+    print(f"\n{'='*70}")
+    print(f"PREDICTION WITH METHOD: {prediction_method.upper()}")
+    print(f"{'='*70}")
+    
+    if prediction_method.lower() == 'gpoe':
+        # gPoE: Generalized Product of Experts with precision-weighted aggregation (β_i = 1/M)
+        # NOTE: predict_gPoE_quantum returns (mean, std_target) where std_target includes noise
+        y_pred_mean, y_pred_std = predict_gPoE_quantum(
+            agent_states=agent_states,
+            X_test=X_test,
+            noise_std=noise_std_optimized,
+            y_train_std=y_train_std
+        )
+        prediction_time = 0  # Approximate (included in function output)
+        method_used = "gPoE (Precision-Weighted Aggregation)"
+
+        
+    elif prediction_method.lower() == 'full-data':
+        # Full-data: Train GP on entire dataset with consensus parameters
+        y_pred_mean, y_pred_std, prediction_time = train_fulldata_gp_quantum(
+            X_train=X_train,
+            Y_train=Y_train,
+            X_test=X_test,
+            quantum_kernel_params=quantum_kernel_params_circuit,
+            num_qubits=num_qubits,
+            num_layers=num_layers,
+            noise_std=noise_std_optimized,
+            use_parameter_shift=use_parameter_shift,
+            encoding_type=encoding_type,
+            kernel_type=kernel_type,
+            measurement=measurement,
+            outer_kernel=outer_kernel,
+            outer_kernel_params=outer_kernel_params,
+            regularization=regularization,
+            y_train_std=y_train_std
+        )
+        method_used = "Full-Data"
+        
+    elif prediction_method.lower() == 'rbcm':
+        # rBCM: Entropy-weighted aggregation of agent predictions
+        # For ADMM-trained agents: use consensus hyperparameters for GLOBAL prior variance
+        y_pred_mean, y_pred_std, prediction_time = predict_rbcm_aggregation_quantum(
+            agent_states=agent_states,
+            X_test=X_test,
+            noise_std=noise_std_optimized,
+            X_train=X_train,
+            y_train_std=y_train_std,
+            consensus_theta=quantum_kernel_params_circuit  # Use consensus hyperparameters for global prior
+        )
+        method_used = "rBCM"
+        
+    else:
+        raise ValueError(f"Unknown prediction method: {prediction_method}. "
+                        f"Must be one of: 'gPoE', 'full-data', 'rbcm'")
+    
+    return y_pred_mean, y_pred_std, prediction_time, method_used
+
+def compute_and_store_agent_covariance_states(agent_data_splits, quantum_kernel_params, num_qubits, 
+                                             num_layers, noise_std, use_parameter_shift=True, 
+                                             encoding_type='yz_cx', kernel_type='fidelity', 
+                                             measurement='XYZ', outer_kernel='gaussian', 
+                                             outer_kernel_params=None, regularization=None):
+    """
+    Compute and store local covariance information for each agent after ADMM training.
+    This matches FACT-GP approach: each agent stores its local trained state for later prediction.
+    
+    Args:
+        agent_data_splits: List of (X_agent, Y_agent) tuples for each agent
+        quantum_kernel_params: Consensus hyperparameters (z_best) from ADMM
+        num_qubits: Number of qubits
+        num_layers: Number of layers in encoding circuit
+        noise_std: Observation noise standard deviation
+        use_parameter_shift: Whether to use parameter shift rule
+        encoding_type: Type of encoding circuit
+        kernel_type: Type of quantum kernel
+        measurement: Measurement operator for ProjectedQuantumKernel
+        outer_kernel: Outer kernel type for ProjectedQuantumKernel
+        outer_kernel_params: Parameters for the outer kernel
+        regularization: Regularization technique for ProjectedQuantumKernel
+    
+    Returns:
+        list: List of dictionaries containing stored agent states:
+              Each dict has: {'X_agent': X, 'Y_agent': Y, 'alpha': alpha, 'L': L, 'agent_id': i}
+    """
+    print(f"\n{'='*60}")
+    print("STORING LOCAL COVARIANCE STATES FOR EACH AGENT")
+    print(f"{'='*60}")
+    
+    # Extract circuit parameters and optimized noise from extended quantum_kernel_params
+    # quantum_kernel_params = [theta_1, ..., theta_k, sigma_n^2]
+    if len(quantum_kernel_params) > 1:
+        # Check if extended format (has noise variance)
+        potential_noise_var = quantum_kernel_params[-1]
+        if potential_noise_var < 10.0:  # Reasonable variance bound
+            quantum_kernel_params_circuit = quantum_kernel_params[:-1]
+            noise_var_optimized = quantum_kernel_params[-1]
+            noise_std_optimized = np.sqrt(noise_var_optimized)
+            print(f"Extended hyperparameters detected. Using circuit params and optimized noise: {noise_std_optimized:.6f}")
+        else:
+            quantum_kernel_params_circuit = quantum_kernel_params
+            noise_std_optimized = noise_std
+    else:
+        quantum_kernel_params_circuit = quantum_kernel_params
+        noise_std_optimized = noise_std
+    
+    agent_states = []
+    
+    for i, (X_agent, Y_agent) in enumerate(agent_data_splits):
+        print(f"\nAgent {i+1}/{len(agent_data_splits)}:")
+        print(f"  Data shape: X={X_agent.shape}, Y={Y_agent.shape}")
+        
+        # Compute per-agent target std (CONCERN 2 FIX: Approach 1)
+        # Each agent standardizes its own data independently, matching classical GP behavior
+        y_agent_std = np.std(Y_agent) if len(Y_agent) > 0 else 1.0
+        print(f"  Per-agent target std: {y_agent_std:.6f}")
+        
+        # Get input dimension
+        input_dim = X_agent.shape[1] if X_agent.ndim > 1 else 1
+        
+        # Create quantum kernel with consensus parameters
+        q_kernel = create_quantum_kernel(
+            num_qubits=num_qubits,
+            num_features=input_dim,
+            num_layers=num_layers,
+            use_parameter_shift=use_parameter_shift,
+            encoding_type=encoding_type,
+            kernel_type=kernel_type,
+            measurement=measurement,
+            outer_kernel=outer_kernel,
+            outer_kernel_params=outer_kernel_params,
+            regularization=regularization
+        )
+        
+        # Set consensus parameters (circuit only)
+        q_kernel.assign_parameters(quantum_kernel_params_circuit)
+        
+        # Compute K(X_agent, X_agent)
+        try:
+            K_agent = q_kernel.evaluate(X_agent, X_agent)
+            print(f"  K(X_agent, X_agent) computed: {K_agent.shape}")
+        except Exception as e:
+            print(f"  ❌ Error computing kernel: {e}")
+            raise
+        
+        # Add noise and jitter for numerical stability (use optimized noise if available)
+        K_agent_noisy = K_agent + (noise_std_optimized**2) * np.eye(K_agent.shape[0])
+        jitter = 1e-6
+        K_agent_noisy += jitter * np.eye(K_agent.shape[0])
+        
+        # Compute Cholesky decomposition
+        try:
+            L = np.linalg.cholesky(K_agent_noisy)
+            print(f"  Cholesky decomposition successful")
+        except np.linalg.LinAlgError as e:
+            print(f"  ❌ Cholesky decomposition failed: {e}")
+            raise
+        
+        # Compute alpha = (K + noise*I)^{-1} @ Y
+        try:
+            alpha = np.linalg.solve(L, Y_agent)
+            alpha = np.linalg.solve(L.T, alpha)
+            print(f"  Alpha coefficients computed: {alpha.shape}")
+        except np.linalg.LinAlgError as e:
+            print(f"  ❌ Failed to compute alpha: {e}")
+            raise
+        
+        # Store agent state
+        agent_state = {
+            'agent_id': i,
+            'X_agent': X_agent,
+            'Y_agent': Y_agent,
+            'alpha': alpha,
+            'L': L,
+            'K_agent': K_agent,
+            'q_kernel': q_kernel,
+            'y_train_std': y_agent_std  # Per-agent target std (CONCERN 2 FIX)
+        }
+        agent_states.append(agent_state)
+        print(f"  ✓ Agent {i+1} state stored")
+    
+    print(f"\n✅ All {len(agent_states)} agent covariance states stored successfully")
+    print(f"{'='*60}\n")
+    
+    return agent_states
+
+def predict_gPoE_quantum(agent_states, X_test, noise_std, y_train_std=None):
+    """
+    Make predictions using QUANTUM gPoE (Generalized Product of Experts).
+    
+    Implements gPoE with equal weights β_i = 1/M precision-weighted aggregation.
+    
+    Paper formula (equations 8-9):
+    - Precision: σ^-2_gPoE(x*) = Σ(β_i σ_i^-2(x*))  where β_i = 1/M
+    - Mean: μ_gPoE(x*) = σ²_gPoE(x*) * Σ(β_i σ_i^-2(x*) μ_i(x*))
+    
+    CRITICAL: Returns full TARGET variance (latent + observation noise) for correct
+    NLPD evaluation.
+    
+    Args:
+        agent_states: List of stored agent states from compute_and_store_agent_covariance_states()
+        X_test: Test input data (N_test, D)
+        noise_std: Observation noise standard deviation
+        y_train_std: Target standard deviation (for fair scaling with classical baseline)
+    
+    Returns:
+        tuple: (y_pred_mean, y_pred_std_target) where y_pred_std_target includes observation noise
+    """
+    if y_train_std is None:
+        y_train_std = 1.0
+    
+    print(f"\nMaking gPoE (PRECISION-WEIGHTED) predictions using stored covariance states...")
+    print(f"  Test data: {X_test.shape}")
+    print(f"  Number of agents: {len(agent_states)}")
+    print(f"  Aggregation: gPoE with equal weights β_i = 1/{len(agent_states)}")
+    print(f"  Training target std (for scaling fairness): {y_train_std:.6f}")
+    
+    # Pre-compute K_test_test ONCE
+    print(f"  Pre-computing K_test_test (will be reused for all agents)...")
+    agent_ref = agent_states[0]
+    q_kernel_ref = agent_ref['q_kernel']
+    try:
+        K_test_test_shared = q_kernel_ref.evaluate(X_test, X_test)
+        k_diag_test_test = np.diag(K_test_test_shared)
+        print(f"    K_test_test shape: {K_test_test_shared.shape}")
+    except Exception as e:
+        print(f"    WARNING: Could not pre-compute K_test_test: {e}")
+        K_test_test_shared = None
+        k_diag_test_test = None
+    
+    local_means = []
+    local_variances = []
+    
+    # Collect predictions and variances from each agent
+    M = len(agent_states)
+    for agent_state in agent_states:
+        agent_id = agent_state['agent_id']
+        X_agent = agent_state['X_agent']
+        alpha = agent_state['alpha']
+        L = agent_state['L']
+        q_kernel = agent_state['q_kernel']
+        
+        print(f"\n  Agent {agent_id+1} prediction...")
+        
+        # Compute K(X_test, X_agent)
+        try:
+            K_test_agent = q_kernel.evaluate(X_test, X_agent)
+        except Exception as e:
+            print(f"    ❌ Error computing kernel: {e}")
+            raise
+        
+        # Local mean: K_test_agent @ alpha
+        y_mean_local = K_test_agent @ alpha
+        local_means.append(y_mean_local)
+        
+        # Local latent variance
+        try:
+            if K_test_test_shared is not None:
+                k_diag = k_diag_test_test
+            else:
+                K_test_test_i = q_kernel.evaluate(X_test, X_test)
+                k_diag = np.diag(K_test_test_i)
+            
+            v = np.linalg.solve(L, K_test_agent.T)
+            y_var_local = k_diag - np.sum(v**2, axis=0)
+            y_var_local = np.maximum(y_var_local, 1e-10)
+            
+            local_variances.append(y_var_local)
+            
+        except Exception as e:
+            print(f"    ❌ Error computing variance: {e}")
+            raise
+    
+    # gPoE PRECISION-WEIGHTED AGGREGATION (from paper equations 8-9)
+    print(f"\nAggregating using gPoE precision-weighting...")
+    
+    local_means = np.array(local_means)      # Shape: (M, n_test)
+    local_variances = np.array(local_variances)  # Shape: (M, n_test)
+    
+    # CONCERN 3 FIX: Scale local variances by y_train_std² to match target-space scales
+    # Quantum kernels operate in normalized space, must scale to original target scale
+    # for fair precision-weighting against classical GPs
+    local_variances_scaled = local_variances * (y_train_std ** 2)
+    
+    # gPoE weight: β_i = 1/M
+    beta_i = 1.0 / M
+    
+    # Compute precisions: σ_i^-2 = 1 / σ_i² (using SCALED variances)
+    precisions = 1.0 / (local_variances_scaled + 1e-10)  # Shape: (M, n_test)
+    
+    # Weighted precisions: β_i * σ_i^-2
+    weighted_precisions = beta_i * precisions  # Shape: (M, n_test)
+    
+    # Total precision: σ^-2_gPoE = Σ(β_i σ_i^-2)
+    total_precision = np.sum(weighted_precisions, axis=0)  # Shape: (n_test,)
+    
+    # Weighted sum for mean: Σ(β_i σ_i^-2 μ_i)
+    weighted_sum = np.sum(beta_i * precisions * local_means, axis=0)  # Shape: (n_test,)
+    
+    # Final predictions (in latent space after aggregation)
+    y_pred_var_latent = 1.0 / (total_precision + 1e-10)  # σ²_gPoE
+    y_pred_mean = y_pred_var_latent * weighted_sum  # μ_gPoE
+    
+    # CONCERN 3 FIX: Convert to target variance (add observation noise, scaled to original space)
+    # noise_std was in normalized space, must scale by y_train_std² for target-space NLPD
+    noise_var_scaled = (noise_std * y_train_std) ** 2
+    y_pred_var_target = y_pred_var_latent + noise_var_scaled
+    y_pred_std_target = np.sqrt(np.maximum(y_pred_var_target, 1e-10))
+    
+    print(f"  Latent variance range: [{np.min(y_pred_var_latent):.6f}, {np.max(y_pred_var_latent):.6f}]")
+    print(f"  Target variance range (latent + scaled noise): [{np.min(y_pred_var_target):.6f}, {np.max(y_pred_var_target):.6f}]")
+    print(f"  Final mean range: [{np.min(y_pred_mean):.4f}, {np.max(y_pred_mean):.4f}]")
+    print(f"  Final target std range: [{np.min(y_pred_std_target):.4f}, {np.max(y_pred_std_target):.4f}]")
+    print(f"  CONCERN 3 FIX: Scaled local variances by y_train_std²={y_train_std**2:.6f}")
+    print(f"  CONCERN 3 FIX: Scaled noise from {noise_std**2:.6f} to {noise_var_scaled:.6f}")
+    
+    return y_pred_mean, y_pred_std_target
+
+def predict_quantum_gp_with_agent_states(agent_states, X_test, noise_std, y_train_std=None):
+    """
+    Make predictions using stored agent covariance states (FACT-GP approach).
+    Each agent makes local predictions independently, then results are aggregated.
+    
+    CRITICAL: Returns full TARGET variance (latent + observation noise) for correct
+    uncertainty quantification and NLPD evaluation in downstream evaluation pipeline.
+    
+    PERFORMANCE OPTIMIZATION: K_test_test is computed once and reused across all agents
+    since X_test and kernel parameters are identical for all agents.
+    
+    Args:
+        agent_states: List of stored agent states from compute_and_store_agent_covariance_states()
+        X_test: Test input data (N_test, D)
+        noise_std: Observation noise standard deviation
+        y_train_std: Target standard deviation (for fair scaling with classical baseline)
+    
+    Returns:
+        tuple: (y_pred_mean, y_pred_std_target) where y_pred_std_target includes observation noise
+               for correct NLPD calculation: std_target = √(latent_var + noise_var)
+    """
+    if y_train_std is None:
+        y_train_std = 1.0
+    
+    print(f"\nMaking FACT-GP predictions using stored covariance states...")
+    print(f"  Test data: {X_test.shape}")
+    print(f"  Number of agents: {len(agent_states)}")
+    print(f"  Training target std (for scaling fairness): {y_train_std:.6f}")
+    
+    # Pre-compute K_test_test ONCE to avoid redundant evaluations
+    # Since all agents use the same X_test and consensus kernel params,
+    # we only need to compute this matrix once and reuse its diagonal
+    print(f"  Pre-computing K_test_test (will be reused for all agents)...")
+    agent_ref = agent_states[0]
+    q_kernel_ref = agent_ref['q_kernel']
+    try:
+        K_test_test_shared = q_kernel_ref.evaluate(X_test, X_test)
+        k_diag_test_test = np.diag(K_test_test_shared)
+        print(f"    K_test_test shape: {K_test_test_shared.shape}, will reuse {len(agent_states)} times")
+    except Exception as e:
+        print(f"    WARNING: Could not pre-compute K_test_test: {e}")
+        K_test_test_shared = None
+        k_diag_test_test = None
+    
+    local_means = []
+    local_variances = []
+    
+    # Collect predictions from each agent
+    for agent_state in agent_states:
+        agent_id = agent_state['agent_id']
+        X_agent = agent_state['X_agent']
+        alpha = agent_state['alpha']
+        L = agent_state['L']
+        q_kernel = agent_state['q_kernel']
+        # CONCERN 2 FIX (Approach 1): Use per-agent y_train_std
+        y_agent_std = agent_state['y_train_std']
+        
+        print(f"\n  Predicting from Agent {agent_id+1}...")
+        
+        # Compute K(X_test, X_agent) for this agent
+        try:
+            K_test_agent = q_kernel.evaluate(X_test, X_agent)
+            print(f"    K(X_test, X_agent) computed: {K_test_agent.shape}")
+        except Exception as e:
+            print(f"    ❌ Error computing kernel: {e}")
+            raise
+        
+        # Compute local mean: K_test_agent @ alpha
+        y_mean_local = K_test_agent @ alpha
+        local_means.append(y_mean_local)
+        
+        # Compute local latent variance efficiently using stored L and pre-computed K_test_test
+        # variance = diag(K_test_test) - ||solve(L, K_test_agent.T)||²
+        try:
+            # Use pre-computed K_test_test if available, otherwise compute for this agent
+            if K_test_test_shared is not None:
+                k_diag = k_diag_test_test
+            else:
+                K_test_test_i = q_kernel.evaluate(X_test, X_test)
+                k_diag = np.diag(K_test_test_i)
+            
+            # Solve L @ v = K_test_agent.T for v
+            v = np.linalg.solve(L, K_test_agent.T)
+            
+            # Latent Variance = diag(K_test_test) - ||v||²
+            y_var_local = k_diag - np.sum(v**2, axis=0)
+            y_var_local = np.maximum(y_var_local, 1e-10)  # Ensure non-negative
+            
+            local_variances.append(y_var_local)
+            print(f"    Local mean range: [{y_mean_local.min():.4f}, {y_mean_local.max():.4f}]")
+            print(f"    Local latent std range: [{np.sqrt(y_var_local.min()):.4f}, {np.sqrt(y_var_local.max()):.4f}]")
+            
+        except Exception as e:
+            print(f"    ❌ Error computing variance: {e}")
+            raise
+    
+    # Aggregate predictions using FACT-GP formula
+    print(f"\nAggregating predictions from {len(agent_states)} agents...")
+    
+    # Step 1: Simple arithmetic mean of predictions
+    y_pred_mean = np.mean(local_means, axis=0)
+    print(f"  Mean aggregation: {y_pred_mean.shape}")
+    
+    # Step 2: Aggregate uncertainties with per-agent scaling (matching classical approach)
+    # CONCERN 2 FIX: Apply per-agent y_train_std² scaling before aggregation, matching classical
+    # This ensures each agent's variance contribution is scaled by ITS OWN training data standard deviation
+    scaled_local_variances = []
+    for i, var in enumerate(local_variances):
+        y_agent_std = agent_states[i]['y_train_std']
+        scaled_local_variances.append(var * (y_agent_std ** 2))
+    scaled_local_variances = np.array(scaled_local_variances)
+    
+    # epistemic_variance = mean of (per-agent scaled) local variances
+    epistemic_variance = np.mean(scaled_local_variances, axis=0)
+    
+    # disagreement_variance = variance across local predictions (model disagreement)
+    disagreement_variance = np.var(local_means, axis=0)
+    
+    # Total latent variance = epistemic + disagreement (FACT-GP formula)
+    y_pred_var_latent = epistemic_variance + disagreement_variance
+    
+    # CRITICAL FIX: Convert to full TARGET variance for NLPD evaluation
+    # σ²_target = σ²_latent_scaled + σ²_ε_scaled
+    # CONCERN 3 FIX: Scale noise_std by global y_train_std for target-space NLPD
+    # (latent variance already scaled by per-agent y_train_std² factors)
+    noise_var_scaled = (noise_std * y_train_std) ** 2
+    y_pred_var_target = y_pred_var_latent + noise_var_scaled
+    y_pred_std_target = np.sqrt(np.maximum(y_pred_var_target, 1e-10))
+    
+    print(f"\n  Aggregation complete:")
+    print(f"    Epistemic variance (mean of scaled local variances): {np.mean(epistemic_variance):.6f}")
+    print(f"    Disagreement variance: {np.mean(disagreement_variance):.6f}")
+    print(f"  CONCERN 3 FIX: Scaled noise from {noise_std**2:.6f} to {noise_var_scaled:.6f}")
+    print(f"  Final target variance range: [{np.min(y_pred_var_target):.6f}, {np.max(y_pred_var_target):.6f}]")
+    
+    print(f"  Epistemic latent variance range (after per-agent scaling): [{epistemic_variance.min():.6f}, {epistemic_variance.max():.6f}]")
+    print(f"  Disagreement variance range: [{disagreement_variance.min():.6f}, {disagreement_variance.max():.6f}]")
+    print(f"  Total latent variance range (epistemic + disagreement): [{y_pred_var_latent.min():.6f}, {y_pred_var_latent.max():.6f}]")
+    print(f"  Target variance (latent + noise) range: [{y_pred_var_target.min():.6f}, {y_pred_var_target.max():.6f}]")
+    print(f"  Final mean range: [{y_pred_mean.min():.4f}, {y_pred_mean.max():.4f}]")
+    print(f"  Final target std range (for NLPD): [{y_pred_std_target.min():.4f}, {y_pred_std_target.max():.4f}]")
+    
+    return y_pred_mean, y_pred_std_target
 
 def predict_quantum_gp(X_train, Y_train, X_test, quantum_kernel_params, 
                       num_qubits, num_layers, noise_std, 
@@ -1507,6 +2486,24 @@ def k_fold_cross_validation_consensus(X_train, Y_train, consensus_params, num_qu
     """
     from sklearn.model_selection import KFold
     
+    # Extract circuit parameters and optimized noise from extended consensus_params
+    # consensus_params = [theta_1, ..., theta_k, sigma_n^2]
+    if len(consensus_params) > 1:
+        # Check if this looks like extended format (last dim different from noise_std scale)
+        potential_noise_var = consensus_params[-1]
+        # If consensus_params looks extended, extract parts
+        if potential_noise_var < 10.0 and potential_noise_var != noise_std:  # Reasonable bounds for variance
+            consensus_params_circuit = consensus_params[:-1]
+            noise_var_optimized = consensus_params[-1]
+            noise_std_optimized = np.sqrt(noise_var_optimized)
+        else:
+            # Original format
+            consensus_params_circuit = consensus_params
+            noise_std_optimized = noise_std
+    else:
+        consensus_params_circuit = consensus_params
+        noise_std_optimized = noise_std
+    
     # Create k-fold splits
     kfold = KFold(n_splits=k_folds, shuffle=True, random_state=random_seed)
     
@@ -1516,7 +2513,7 @@ def k_fold_cross_validation_consensus(X_train, Y_train, consensus_params, num_qu
     
     input_dim = X_train.shape[1] if X_train.ndim > 1 else 1
     
-    print(f"    Performing {k_folds}-fold CV on consensus params: {consensus_params}")
+    print(f"    Performing {k_folds}-fold CV on consensus params (circuit): {consensus_params_circuit}")
     
     for fold_idx, (train_idx, val_idx) in enumerate(kfold.split(X_train)):
         try:
@@ -1529,10 +2526,10 @@ def k_fold_cross_validation_consensus(X_train, Y_train, consensus_params, num_qu
                 X_train=X_fold_train,
                 Y_train=Y_fold_train,
                 X_test=X_fold_val,
-                quantum_kernel_params=consensus_params,
+                quantum_kernel_params=consensus_params_circuit,
                 num_qubits=num_qubits,
                 num_layers=num_layers,
-                noise_std=noise_std,
+                noise_std=noise_std_optimized,
                 use_parameter_shift=use_parameter_shift,
                 encoding_type=encoding_type,
                 kernel_type=kernel_type,
@@ -1593,6 +2590,178 @@ def k_fold_cross_validation_consensus(X_train, Y_train, consensus_params, num_qu
         'fold_rmses': fold_rmses,
         'valid_folds': len(valid_nlpds),
         'total_folds': k_folds
+    }
+
+def k_fold_cross_validation_local(agent_id, X_local, Y_local, consensus_params, num_qubits, num_layers, 
+                                  noise_std, k_folds=5, use_parameter_shift=True, encoding_type='yz_cx', 
+                                  kernel_type='fidelity', measurement='XYZ', outer_kernel='gaussian', 
+                                  outer_kernel_params=None, regularization=None, random_seed=42):
+    """
+    Perform k-fold cross-validation on LOCAL agent data (distributed approach).
+    This evaluates consensus hyperparameters using ONLY the agent's local data.
+    No data sharing - respects distributed constraint.
+    
+    Args:
+        agent_id: Agent identifier
+        X_local: Local training input data for this agent only
+        Y_local: Local training output data for this agent only
+        consensus_params: Consensus hyperparameters (z) to evaluate
+        k_folds: Number of folds for cross-validation
+        random_seed: Random seed for reproducible fold splitting
+    
+    Returns:
+        dict: CV results with mean NLPD, std NLPD, and fold-wise results
+    """
+    from sklearn.model_selection import KFold
+    
+    # Extract circuit parameters and optimized noise from extended consensus_params
+    # consensus_params = [theta_1, ..., theta_k, sigma_n^2]
+    # Check if last element is a noise variance (small positive value, not an angle)
+    if len(consensus_params) > 1:
+        last_elem = consensus_params[-1]
+        # Noise variance should be small (< 10) and different from a circuit parameter
+        # Circuit params are typically in [0, 2π] or [-π, π]
+        if 0 < last_elem < 10.0:
+            # Extended format with noise: extract circuit params and noise variance
+            consensus_params_circuit = consensus_params[:-1]
+            noise_var_optimized = last_elem
+            noise_std_optimized = np.sqrt(noise_var_optimized)
+            print(f"    Extracted optimized noise: {noise_std_optimized:.6f} (from consensus_params[-1]={noise_var_optimized:.6f})")
+        else:
+            # Original format: only circuit parameters (last elem is circuit param, not noise)
+            consensus_params_circuit = consensus_params
+            noise_std_optimized = noise_std
+    else:
+        # Single parameter: treat as circuit parameter
+        consensus_params_circuit = consensus_params
+        noise_std_optimized = noise_std
+    
+    # Create k-fold splits on LOCAL data only
+    kfold = KFold(n_splits=k_folds, shuffle=True, random_state=random_seed)
+    
+    fold_nlpds = []
+    fold_r2s = []
+    fold_rmses = []
+    
+    input_dim = X_local.shape[1] if X_local.ndim > 1 else 1
+    
+    # Important: CV uses only this agent's local data
+    for fold_idx, (train_idx, val_idx) in enumerate(kfold.split(X_local)):
+        try:
+            # Split LOCAL data for this fold
+            X_fold_train, X_fold_val = X_local[train_idx], X_local[val_idx]
+            Y_fold_train, Y_fold_val = Y_local[train_idx], Y_local[val_idx]
+            
+            # Make predictions using consensus hyperparameters on this agent's local fold
+            y_pred_mean, y_pred_var, _, _, _ = predict_quantum_gp(
+                X_train=X_fold_train,
+                Y_train=Y_fold_train,
+                X_test=X_fold_val,
+                quantum_kernel_params=consensus_params_circuit,
+                num_qubits=num_qubits,
+                num_layers=num_layers,
+                noise_std=noise_std_optimized,
+                use_parameter_shift=use_parameter_shift,
+                encoding_type=encoding_type,
+                kernel_type=kernel_type,
+                measurement=measurement,
+                outer_kernel=outer_kernel,
+                outer_kernel_params=outer_kernel_params,
+                regularization=regularization
+            )
+            
+            # Calculate NLPD for this fold
+            residuals = Y_fold_val - y_pred_mean
+            eps = 1e-10
+            Y_pred_var_safe = np.maximum(y_pred_var, eps)
+            
+            log_2pi = np.log(2 * np.pi)
+            nlpd_per_point = 0.5 * log_2pi + 0.5 * np.log(Y_pred_var_safe) + 0.5 * (residuals**2 / Y_pred_var_safe)
+            fold_nlpd = np.mean(nlpd_per_point)
+            
+            # Also calculate R² and RMSE for additional metrics
+            fold_r2 = r2_score(Y_fold_val, y_pred_mean)
+            fold_rmse = np.sqrt(mean_squared_error(Y_fold_val, y_pred_mean))
+            
+            fold_nlpds.append(fold_nlpd)
+            fold_r2s.append(fold_r2)
+            fold_rmses.append(fold_rmse)
+            
+        except Exception as e:
+            # Use a penalty score for failed folds
+            fold_nlpds.append(float('inf'))
+            fold_r2s.append(-float('inf'))
+            fold_rmses.append(float('inf'))
+    
+    # Calculate cross-validation statistics
+    valid_nlpds = [nlpd for nlpd in fold_nlpds if not np.isinf(nlpd)]
+    
+    if len(valid_nlpds) >= k_folds // 2:  # At least half the folds must succeed
+        mean_nlpd = np.mean(valid_nlpds)
+        std_nlpd = np.std(valid_nlpds)
+        mean_r2 = np.mean([r2 for r2, nlpd in zip(fold_r2s, fold_nlpds) if not np.isinf(nlpd)])
+        mean_rmse = np.mean([rmse for rmse, nlpd in zip(fold_rmses, fold_nlpds) if not np.isinf(nlpd)])
+    else:
+        # Too many folds failed
+        mean_nlpd = float('inf')
+        std_nlpd = float('inf')
+        mean_r2 = -float('inf')
+        mean_rmse = float('inf')
+    
+    return {
+        'agent_id': agent_id,
+        'mean_nlpd': mean_nlpd,
+        'std_nlpd': std_nlpd,
+        'mean_r2': mean_r2,
+        'mean_rmse': mean_rmse,
+        'fold_nlpds': fold_nlpds,
+        'fold_r2s': fold_r2s,
+        'fold_rmses': fold_rmses,
+        'valid_folds': len(valid_nlpds),
+        'total_folds': k_folds
+    }
+
+def aggregate_local_cv_results(cv_results_list):
+    """
+    Aggregate cross-validation results from all agents.
+    Each agent evaluated consensus params on their own local data.
+    
+    Args:
+        cv_results_list: List of CV result dictionaries from each agent
+    
+    Returns:
+        dict: Aggregated CV results (mean across agents)
+    """
+    # Extract NLPD scores from all agents
+    all_nlpds = []
+    all_r2s = []
+    all_agent_ids = []
+    
+    for cv_result in cv_results_list:
+        if not np.isinf(cv_result['mean_nlpd']):
+            all_nlpds.append(cv_result['mean_nlpd'])
+            all_r2s.append(cv_result['mean_r2'])
+            all_agent_ids.append(cv_result['agent_id'])
+    
+    if len(all_nlpds) > 0:
+        # Aggregate by averaging across agents
+        aggregated_nlpd = np.mean(all_nlpds)
+        aggregated_nlpd_std = np.std(all_nlpds)  # Std dev across agents
+        aggregated_r2 = np.mean(all_r2s)
+    else:
+        aggregated_nlpd = float('inf')
+        aggregated_nlpd_std = float('inf')
+        aggregated_r2 = -float('inf')
+    
+    return {
+        'aggregated_nlpd': aggregated_nlpd,
+        'aggregated_nlpd_std': aggregated_nlpd_std,
+        'aggregated_r2': aggregated_r2,
+        'agent_nlpds': all_nlpds,
+        'agent_ids': all_agent_ids,
+        'num_valid_agents': len(all_nlpds),
+        'total_agents': len(cv_results_list),
+        'individual_results': cv_results_list
     }
 
 def evaluate_predictions(Y_true, Y_pred, Y_pred_var=None, dataset_type="Test"):
@@ -1926,13 +3095,15 @@ def plot_predictions(X_test, Y_true, Y_pred, Y_pred_var=None, X_train=None, Y_tr
 
 def main():
     # Parse command line arguments
-    parser = argparse.ArgumentParser(description='Distributed Quantum Gaussian Process Regression with Riemannian ADMM')
+    parser = argparse.ArgumentParser(description='Parallel Distributed QGPR with ADMM')
+    parser.add_argument('--differentiation', choices=['parameter_shift', 'autodiff'], default='autodiff',
+                       help='Quantum differentiation method: parameter_shift (Qiskit) or autodiff (PennyLane) (default: autodiff)')
     parser.add_argument('--n-agents', type=int, default=4,
                        help='Number of agents (default: 4)')
-    parser.add_argument('--num-qubits', type=int, default=4,
-                       help='Number of qubits (default: 4)')
-    parser.add_argument('--num-layers', type=int, default=2,
-                       help='Number of layers in the encoding circuit (default: 2)')
+    parser.add_argument('--num-qubits', type=int, default=3,
+                       help='Number of qubits (default: 3)')
+    parser.add_argument('--num-layers', type=int, default=1,
+                       help='Number of layers in the encoding circuit (default: 1)')
     parser.add_argument('--max-iter', type=int, default=100,
                        help='Maximum ADMM iterations (default: 100)')
     parser.add_argument('--tolerance', type=float, default=1e-6,
@@ -1951,6 +3122,8 @@ def main():
                        help='Percentage of local data to give to each agent (0.0 to 1.0, default: 1.0 = 100%%)')
     parser.add_argument('--noise-std', type=float, default=0.1,
                        help='Noise standard deviation (default: 0.1)')
+    parser.add_argument('--noise-lower-bound', type=float, default=0.1,
+                       help='Lower bound for noise hyperparameter optimization (default: 0.1)')
     parser.add_argument('--test-split', type=float, default=0.1,
                        help='Test split ratio (default: 0.1)')
     parser.add_argument('--num-workers', type=int, default=None,
@@ -1961,20 +3134,20 @@ def main():
     # Dataset generation arguments
     parser.add_argument('--classical-dataset', action='store_true',
                        help='Use classical dataset generation instead of quantum (default: quantum)')
-    parser.add_argument('--real-world-dataset', type=str, default=None,
+    parser.add_argument('--real-world-dataset', type=str, default='srtm',
                        choices=['sst', 'sea_surface_temperature', 'robot_push', 'robot', 'push', 'srtm_elevation', 'srtm', 'elevation'],
-                       help='Use real-world dataset instead of synthetic. Options: sst/sea_surface_temperature (2D), robot_push/robot/push (3D), srtm_elevation/srtm/elevation (2D)')
+                       help='Use real-world dataset instead of synthetic. Options: sst/sea_surface_temperature (2D), robot_push/robot/push (3D), srtm_elevation/srtm/elevation (2D) (default: srtm)')
     parser.add_argument('--srtm-region', type=str, default='maharashtra',
                        choices=['maharashtra', 'great_lakes', 'oregon_coast', 'washington_coast'],
                        help='SRTM elevation region from Attentive Kernels paper (default: maharashtra)')
     parser.add_argument('--use-srtm-preprocessed', action='store_true', default=False,
                        help='Use preprocessed .npy SRTM files instead of raw HGT files (default: False)')
-    parser.add_argument('--dataset-max-samples', type=int, default=5000,
-                       help='Maximum number of samples to load from real-world datasets (default: 5000)')
+    parser.add_argument('--dataset-max-samples', type=int, default=1000,
+                       help='Maximum number of samples to load from real-world datasets (default: 1000)')
     parser.add_argument('--dataset-subsample', type=int, default=10,
                        help='Subsampling factor for real-world datasets (default: 10)')
-    parser.add_argument('--dataset-normalize', action='store_true', default=False,
-                       help='Normalize real-world dataset features and targets (default: False)')
+    parser.add_argument('--dataset-normalize', action='store_true', default=True,
+                       help='Normalize real-world dataset features and targets (default: True)')
     parser.add_argument('--dataset-only', action='store_true',
                        help='Stop after dataset generation without training')
     parser.add_argument('--save-dataset', action='store_true',
@@ -1985,17 +3158,17 @@ def main():
                        help='Range for input data generation (default: -2.0 2.0)')
     parser.add_argument('--encoding', 
                        choices=['chebyshev', 'yz_cx', 'hubregtsen', 'kyriienko', 'multi_control', 'layered', 'random', 'highdim'], 
-                       default='yz_cx',
-                       help='Encoding circuit type: chebyshev (has arccos), yz_cx (safer, no arccos), hubregtsen (research), kyriienko (research), multi_control (complex), layered (customizable), random (randomized), highdim (high-dimensional) (default: yz_cx)')
+                       default='hubregtsen',
+                       help='Encoding circuit type: chebyshev (has arccos), yz_cx (safer, no arccos), hubregtsen (research), kyriienko (research), multi_control (complex), layered (customizable), random (randomized), highdim (high-dimensional) (default: hubregtsen)')
     parser.add_argument('--kernel-type', 
                        choices=['fidelity', 'projected'], 
-                       default='fidelity',
-                       help='Quantum kernel type: fidelity (state fidelity) or projected (observable measurements) (default: fidelity)')
+                       default='projected',
+                       help='Quantum kernel type: fidelity (state fidelity) or projected (observable measurements) (default: projected)')
     parser.add_argument('--measurement', type=str, default='XYZ',
                        help='Measurement operator for ProjectedQuantumKernel: Can be a string like "XYZ", "X", "Y", "Z", "XX", "YY", "ZZ", etc., or a list of Pauli strings for multi-qubit measurements (default: XYZ)')
     parser.add_argument('--outer-kernel', type=str, default='gaussian',
                        choices=['gaussian', 'matern', 'expsinesquared', 'rationalquadratic', 'dotproduct', 'pairwisekernel'],
-                       help='Outer kernel type for ProjectedQuantumKernel: gaussian (default), matern, expsinesquared, rationalquadratic, dotproduct, pairwisekernel')
+                       help='Outer kernel type for ProjectedQuantumKernel: gaussian, matern (default), expsinesquared, rationalquadratic, dotproduct, pairwisekernel')
     parser.add_argument('--outer-kernel-gamma', type=float, default=1.0,
                        help='Gamma parameter for Gaussian outer kernel (default: 1.0)')
     parser.add_argument('--outer-kernel-length-scale', type=float, default=1.0,
@@ -2011,6 +3184,13 @@ def main():
     parser.add_argument('--regularization', type=str, default=None,
                        choices=['thresholding', 'tikhonov', None],
                        help='Regularization technique for ProjectedQuantumKernel: thresholding, tikhonov, or None (default: None)')
+    parser.add_argument('--prediction-method', type=str, default='gPoE',
+                       choices=['gPoE', 'full-data', 'rbcm'],
+                       help='Prediction aggregation method for distributed quantum GP: '
+                            'independent (FACT-GP simple aggregation), '
+                            'full-data (retrain on full dataset), or '
+                            'rbcm (Robust Bayesian Committee Machine with entropy weighting) '
+                            '(default: gPoE)')
     parser.add_argument('--no-plot', action='store_true',
                        help='Skip plotting the generated data')
     parser.add_argument('--seed', type=int, default=42,
@@ -2029,6 +3209,8 @@ def main():
                        help='Riemannian optimization method (default: gradient_descent)')
     parser.add_argument('--riemannian-beta', type=float, default=0.9,
                        help='Beta parameter for momentum/conjugate gradient methods (default: 0.9)')
+    parser.add_argument('--riemannian-rho', type=float, default=1.0,
+                       help='ADMM penalty parameter for Riemannian optimization (default: 1.0)')
     parser.add_argument('--gradient-clip-norm', type=float, default=1.0,
                        help='Gradient clipping norm (default: 1.0)')
     parser.add_argument('--max-step-size', type=float, default=0.1,
@@ -2037,8 +3219,8 @@ def main():
     # Cross-validation arguments
     parser.add_argument('--cv-folds', type=int, default=5,
                        help='Number of folds for cross-validation (default: 5)')
-    parser.add_argument('--cv-patience', type=int, default=50,
-                       help='Early stopping patience for CV-based optimization (default: 50)')
+    parser.add_argument('--cv-patience', type=int, default=5,
+                       help='Early stopping patience for CV-based optimization (default: 5)')
     
     args = parser.parse_args()
     
@@ -2156,6 +3338,11 @@ def main():
                 kwargs['region'] = args.srtm_region
                 kwargs['subsample_factor'] = args.dataset_subsample
                 kwargs['use_preprocessed'] = args.use_srtm_preprocessed
+                # Pass encoding circuit type so data gets scaled to correct bounds
+                kwargs['encoding_type'] = args.encoding
+                # For Chebyshev circuits, pass the nonlinearity parameter
+                if args.encoding == 'chebyshev':
+                    kwargs['encoding_nonlinearity'] = 'arccos'  # Default for Chebyshev
             
             X_full, Y_full = load_real_world_dataset(dataset_name, **kwargs)
             
@@ -2203,6 +3390,7 @@ def main():
         print(f"  Data range: {args.data_range}")
         print(f"  Encoding type: {args.encoding}")
         print(f"  Noise std: {args.noise_std}")
+        print(f"  Differentiation: {args.differentiation}")
         print(f"  Random seed (ground truth params): {args.seed}")
         if args.kernel_params:
             print(f"  Custom kernel parameters: {args.kernel_params}")
@@ -2235,7 +3423,7 @@ def main():
             num_layers=args.num_layers,
             data_range=tuple(args.data_range),
             noise_std=args.noise_std,
-            use_parameter_shift=True,  # Always use parameter shift for Riemannian optimization
+            use_parameter_shift=(args.differentiation == 'parameter_shift'),
             kernel_params=np.array(args.kernel_params) if args.kernel_params else None,  # Pass custom kernel parameters
             encoding_type=args.encoding,
             kernel_type=args.kernel_type,
@@ -2298,8 +3486,7 @@ def main():
     
     # === Common Training Logic ===
     # Configuration
-    use_parameter_shift = True  # Always use parameter shift for Riemannian agent
-    use_riemannian = True  # Always use Riemannian optimization
+    use_parameter_shift = (args.differentiation == 'parameter_shift')
     n_agents = args.n_agents
     num_qubits = args.num_qubits
     num_layers = args.num_layers
@@ -2322,7 +3509,10 @@ def main():
     riemannian_beta = args.riemannian_beta
     
     print(f"Configuration:")
-    print(f"  Riemannian optimization: Enabled")
+    print("  Gradient method: riemannian")
+    print(f"  Quantum differentiation: {args.differentiation}")
+    print(f"  Parallel parameter evaluation: {'Enabled' if use_parameter_shift else 'Disabled'}")
+    print("  Riemannian optimization: Enabled")
     print(f"    - Method: {riemannian_method}")
     print(f"    - Learning rate: {riemannian_lr}")
     print(f"    - Beta: {riemannian_beta}")
@@ -2331,8 +3521,6 @@ def main():
     print(f"  Input dimension: {input_dim}")
     print(f"  Number of qubits: {num_qubits}")
     print(f"  Number of layers: {num_layers}")
-    print(f"  Encoding circuit: {args.encoding}")
-    print(f"  Kernel type: {args.kernel_type}")
     if not args.classical_dataset:
         print(f"  Training samples: {X_full.shape[0]} (from generated quantum dataset)")
     else:
@@ -2345,7 +3533,8 @@ def main():
     print(f"  Tolerance: {tolADMM}")
     print(f"  ADMM penalty parameter (rho): {rho}")
     print(f"  Lipschitz constant (L): {L[0]} (same for all agents)")
-    print(f"  Parallel workers: {num_workers if num_workers else 'Auto (all CPUs)'}")
+    if use_parameter_shift:
+        print(f"  Parallel workers: {num_workers if num_workers else 'Auto (all CPUs)'}")
     print()
     
     # Split into train/test using sklearn (same as pxpGP_train.py)
@@ -2362,6 +3551,10 @@ def main():
     
     print(f"After split - Training: X={X_train.shape}, Y={Y_train.shape}")
     print(f"After split - Test: X={X_test.shape}, Y={Y_test.shape}")
+    
+    # Compute training target std for fair scaling with classical baseline (Concern 2)
+    y_train_std = np.std(Y_train) if len(Y_train) > 0 else 1.0
+    print(f"Training target std: {y_train_std:.6f}")
     
     # Plot the data with train/test distinction
     if not args.no_plot:
@@ -2401,11 +3594,26 @@ def main():
     print(f"Encoding circuit parameters: {n_hyperparameters}")
 
     # Initialize the ADMM variables
-    # theta, psi, z are initialized to zero
-    # theta: hyperparameters of the quantum kernel
-    # n_hyperparameters: number of hyperparameters for the quantum kernel
+    # Extended to include noise variance optimization
+    # theta, psi, z now have shape (n_agents, n_hyperparameters + 1)
+    # where the last element is the noise variance sigma_n^2
+    n_params_extended = n_hyperparameters + 1  # +1 for noise variance
     theta = np.round(np.random.rand(n_agents, n_hyperparameters), 4)
     psi = np.round(np.random.rand(n_agents, n_hyperparameters), 4)
+    
+    # Initialize noise variance to args.noise_std (used for data generation)
+    # This ensures consistency: data was generated with noise_std, so optimizer should start there
+    initial_noise_var = noise_std  # Use args.noise_std instead of hardcoded 0.1
+    noise_variance_init = np.full((n_agents, 1), initial_noise_var)
+    noise_variance_init = np.round(np.clip(noise_variance_init, args.noise_lower_bound, 1.0), 4)
+    
+    theta = np.concatenate([theta, noise_variance_init], axis=1)  # Shape: (n_agents, n_hyperparameters + 1)
+    psi = np.concatenate([psi, np.zeros((n_agents, 1))], axis=1)  # Shape: (n_agents, n_hyperparameters + 1)
+    
+    print(f"Extended parameter dimension: {n_params_extended} (circuit: {n_hyperparameters}, noise: 1)")
+    print(f"Initialized noise variance (target={initial_noise_var:.6f}): {np.round(noise_variance_init.flatten(), 4)}")
+    print(f"Noise variance bounds: [{args.noise_lower_bound}, 1.0]")
+    
     # rho > 0: penalty parameter constant term of the augmented Lagrangian
     # L_i > 0: Lipschitz constant of the gradient of the loss function, different for each agent
     # rho and L are hyperparameters that can be tuned (set via command line arguments)
@@ -2419,14 +3627,14 @@ def main():
         if X_agent.ndim == 1:
             X_agent = X_agent.reshape(-1, 1)
         
-        # Create Riemannian Agent with pre-initialized kernel
+        # Always use the Riemannian agent with pre-initialized kernel.
         agent = RiemannianAgent(
-            agent_id=f"agent_{i+1}", 
-            X_sub=X_agent, 
-            Y_sub=Y_agent, 
-            num_qubits=num_qubits, 
-            noise_std=noise_std, 
-            rho=rho, 
+            agent_id=f"agent_{i+1}",
+            X_sub=X_agent,
+            Y_sub=Y_agent,
+            num_qubits=num_qubits,
+            noise_std=noise_std,
+            rho=rho,
             L=L[i],
             q_kernel=q_kernel_template,
             use_parameter_shift=use_parameter_shift,
@@ -2441,14 +3649,20 @@ def main():
             regularization=args.regularization,
             riemannian_lr=riemannian_lr,
             riemannian_method=riemannian_method,
-            riemannian_beta=riemannian_beta
+            riemannian_beta=riemannian_beta,
+            noise_lower_bound=args.noise_lower_bound
         )
         agents.append(agent)
         
         # For process execution: store initialization data (avoids pickling quantum objects)
         agent_data_list.append((f"agent_{i+1}", X_agent, Y_agent, num_qubits, noise_std, rho, L[i]))
 
-    # Initialize z using Riemannian framework
+    # Initialize z as the average of theta and psi on the Riemannian manifold.
+    theta_circuit = theta[:, :-1]
+    psi_circuit = psi[:, :-1]
+    theta_noise = theta[:, -1]  # Last column: noise variance
+    psi_noise = psi[:, -1]      # Last column: noise variance
+
     manifold, _, riemannian_admm = create_riemannian_framework(
         num_parameters=n_hyperparameters,
         learning_rate=riemannian_lr,
@@ -2457,10 +3671,16 @@ def main():
         gradient_clip_norm=args.gradient_clip_norm,
         max_step_size=args.max_step_size
     )
-    z = np.round(riemannian_admm.update_z(theta, psi), 4)
-    print(f"Initialized z using Riemannian ADMM on {manifold.name}")
+    z_circuit = np.round(riemannian_admm.update_z(theta_circuit, psi_circuit), 4)
+    z_noise = np.round(np.mean(theta_noise + psi_noise / rho), 4)
+    z_noise = np.clip(z_noise, args.noise_lower_bound, 1.0)
 
-    print(f"Starting ADMM optimization with Riemannian gradients...")
+    z = np.concatenate([z_circuit, [z_noise]])
+    print(f"Initialized z_circuit using Riemannian ADMM on {manifold.name}")
+    print(f"Initialized z_noise using arithmetic mean: {z_noise:.6f}")
+    # z = np.random.rand(n_hyperparameters)  # Random initialization for z
+
+    print("Starting ADMM optimization with riemannian gradients...")
     
     # Initialize NLL loss tracking for analysis
     nll_loss_history = []  # Store NLL losses for each iteration
@@ -2468,16 +3688,18 @@ def main():
     # Print initial hyperparameters
     print(f"\nInitial hyperparameters:")
     if ground_truth_params is not None:
-        print(f"Ground truth params: {ground_truth_params}")
-        print(f"Initial ADMM (z):   {z}")
+        print(f"Ground truth params (circuit only): {ground_truth_params}")
+        print(f"Initial ADMM z (circuit): {z[:-1]}")
+        print(f"Initial ADMM z (noise):   {z[-1]:.6f}")
         
-        # Calculate initial distance to ground truth
-        initial_euclidean = np.linalg.norm(z - ground_truth_params)
-        print(f"Initial ||z - ground_truth||: {initial_euclidean:.6f}")
+        # Calculate initial distance to ground truth (circuit parameters only)
+        initial_euclidean = np.linalg.norm(z[:-1] - ground_truth_params)
+        print(f"Initial ||z_circuit - ground_truth||: {initial_euclidean:.6f}")
         
         initial_error = initial_euclidean
     else:
-        print(f"Initial ADMM (z): {z}")
+        print(f"Initial ADMM z (circuit): {z[:-1]}")
+        print(f"Initial ADMM z (noise):   {z[-1]:.6f}")
         print("(No ground truth available for classical dataset)")
     print(f"Initial agent params (theta):")
     for i, theta_i in enumerate(theta):
@@ -2510,44 +3732,54 @@ def main():
         iteration_start = time.time()
         
         # CORRECT ADMM ORDER: 1. Update z first (consensus update)
+        # Separate circuit parameters and noise variance
         z_old = z.copy()
-        # Use Riemannian ADMM for z update
+        
+        # Extract and update circuit parameters using Riemannian ADMM
+        theta_circuit = theta[:, :-1]
+        psi_circuit = psi[:, :-1]
+        theta_noise = theta[:, -1]
+        psi_noise = psi[:, -1]
+
         manifold, _, riemannian_admm = create_riemannian_framework(
-            num_parameters=len(z),
+            num_parameters=n_hyperparameters,
             learning_rate=riemannian_lr,
             rho=rho,
             method=riemannian_method,
             gradient_clip_norm=args.gradient_clip_norm,
             max_step_size=args.max_step_size
         )
-        z = np.round(riemannian_admm.update_z(theta, psi), 4)
+        z_circuit = np.round(riemannian_admm.update_z(theta_circuit, psi_circuit), 4)
+        z_noise = np.round(np.mean(theta_noise + psi_noise / rho), 4)
+        z_noise = np.clip(z_noise, args.noise_lower_bound, 1.0)
+
+        z = np.concatenate([z_circuit, [z_noise]])
         
-        print(f"Updated consensus z: {z}")
+        print(f"Updated consensus z (circuit): {z[:-1]}")
+        print(f"Updated consensus z (noise): {z[-1]:.6f}")
         
         # CORRECT ADMM ORDER: 2. Update theta and psi using new z
         # Use ProcessPoolExecutor to run agents in parallel
-        # ProcessPoolExecutor creates separate processes, avoiding PennyLane's threading issuesz
+        # ProcessPoolExecutor creates separate processes, avoiding PennyLane's threading issues
         with ProcessPoolExecutor() as executor:
             # Prepare data for each process (includes NEW z and OLD psi_i for each agent)
             process_args = []
             for i, agent_data in enumerate(agent_data_list):
                 # Extend agent_data with current z, psi_i, and Riemannian configuration
-                full_agent_data = agent_data + (z, psi[i], use_parameter_shift, input_dim, num_layers, 
-                                               num_workers, shift_value, args.encoding, args.kernel_type, 
-                                               args.measurement, riemannian_lr, riemannian_method, 
-                                               riemannian_beta, outer_kernel, outer_kernel_params, args.regularization)
+                full_agent_data = agent_data + (z, psi[i], use_parameter_shift, input_dim, num_layers, num_workers, shift_value, args.encoding, args.kernel_type, args.measurement, riemannian_lr, riemannian_method, riemannian_beta, outer_kernel, outer_kernel_params, args.regularization, args.noise_lower_bound)
                 process_args.append(full_agent_data)
             
             # Execute in parallel processes
             results = list(executor.map(process_agent_training, process_args))
-        # results[i] is a tuple with (theta_i, psi_i, nll_loss, condition_number, nll_components) for agent i
+        # results[i] is a tuple with (theta_i, psi_i, nll_loss, condition_number, nll_components, gradient_augmented)
 
         # Extract theta, psi, nll_loss, condition numbers, and NLL components from the results
-        # Each result is a tuple (theta_i, psi_i, nll_loss, condition_number, nll_components)
         nll_losses = []  # Store NLL losses for analysis
         condition_numbers = []  # Store condition numbers for analysis
         nll_components_list = []  # Store NLL components for correlation analysis
-        for i, (theta_i, psi_i, nll_loss, cond_num, nll_comp) in enumerate(results):
+        for i, result in enumerate(results):
+            theta_i, psi_i, nll_loss, cond_num, nll_comp, grad_augmented = result
+            
             theta[i] = np.round(theta_i, 4)
             psi[i] = np.round(psi_i, 4)
             nll_losses.append(nll_loss)
@@ -2642,45 +3874,60 @@ def main():
         print(f"  Summary: Avg={avg_cond:.2e}, Min={min_cond:.2e}, Max={max_cond:.2e}")
         print()
 
-        # Cross-Validation on Consensus Parameters (z already updated before agent training)
-        print(f"\nCross-Validation Analysis - Iteration {iter}:")
+        # Cross-Validation on Consensus Parameters - DISTRIBUTED APPROACH
+        # Each agent evaluates on LOCAL data only (no data sharing)
+        print(f"\nCross-Validation Analysis - Iteration {iter} (DISTRIBUTED, LOCAL DATA)")
         print(f"  Evaluating consensus parameters: {z}")
+        print(f"  Each agent evaluates on their own local data (no data sharing)")
         
         try:
-            cv_results = k_fold_cross_validation_consensus(
-                X_train=X_train, 
-                Y_train=Y_train, 
-                consensus_params=z,
-                num_qubits=num_qubits, 
-                num_layers=num_layers, 
-                noise_std=noise_std,
-                k_folds=k_folds, 
-                use_parameter_shift=use_parameter_shift,
-                encoding_type=args.encoding, 
-                kernel_type=args.kernel_type,
-                measurement=args.measurement, 
-                outer_kernel=outer_kernel,
-                outer_kernel_params=outer_kernel_params, 
-                regularization=args.regularization,
-                random_seed=args.seed + iter  # Different seed each iteration
-            )
+            # Perform local CV for each agent in parallel
+            cv_results_local = []
             
-            cv_score = cv_results['mean_nlpd']
-            cv_std = cv_results['std_nlpd']
-            cv_r2 = cv_results['mean_r2']
-            valid_folds = cv_results['valid_folds']
-            total_folds = cv_results['total_folds']
+            for i, (X_agent, Y_agent) in enumerate(agent_data_splits):
+                cv_result = k_fold_cross_validation_local(
+                    agent_id=f"agent_{i+1}",
+                    X_local=X_agent,
+                    Y_local=Y_agent,
+                    consensus_params=z,
+                    num_qubits=num_qubits, 
+                    num_layers=num_layers, 
+                    noise_std=noise_std,
+                    k_folds=k_folds, 
+                    use_parameter_shift=use_parameter_shift,
+                    encoding_type=args.encoding, 
+                    kernel_type=args.kernel_type,
+                    measurement=args.measurement, 
+                    outer_kernel=outer_kernel,
+                    outer_kernel_params=outer_kernel_params, 
+                    regularization=args.regularization,
+                    random_seed=args.seed + iter  # Different seed each iteration
+                )
+                cv_results_local.append(cv_result)
             
+            # Aggregate results across agents
+            cv_aggregated = aggregate_local_cv_results(cv_results_local)
+            
+            cv_score = cv_aggregated['aggregated_nlpd']
+            cv_std = cv_aggregated['aggregated_nlpd_std']
+            cv_r2 = cv_aggregated['aggregated_r2']
+            
+            # Print per-agent results
+            print(f"\n  Per-Agent CV Results (Local Data):")
+            for i, agent_result in enumerate(cv_results_local):
+                agent_status = "✅" if not np.isinf(agent_result['mean_nlpd']) else "❌"
+                print(f"    {agent_status} Agent {i+1}: NLPD={agent_result['mean_nlpd']:.4f}±{agent_result['std_nlpd']:.4f}, R²={agent_result['mean_r2']:.4f}")
+            
+            # Print aggregated results
             if not np.isinf(cv_score):
                 status = "✅ Good" if cv_score < 2.0 else "⚠️ Moderate" if cv_score < 5.0 else "❌ Poor"
             else:
                 status = "❌ Failed"
             
-            print(f"  Consensus CV Results:")
-            print(f"    CV-NLPD: {cv_score:.4f}±{cv_std:.4f}")
-            print(f"    CV-R²:   {cv_r2:.4f}")
-            print(f"    Folds:   {valid_folds}/{total_folds}")
-            print(f"    Status:  {status}")
+            print(f"\n  Aggregated CV Results (Distributed):")
+            print(f"    Aggregated NLPD: {cv_score:.4f}±{cv_std:.4f} (mean±std across {cv_aggregated['num_valid_agents']} agents)")
+            print(f"    Aggregated R²:   {cv_r2:.4f}")
+            print(f"    Status:          {status}")
             
             # Track best CV score for early stopping
             if cv_score < cv_best:
@@ -2697,9 +3944,11 @@ def main():
                 'consensus_cv_score': cv_score,
                 'cv_score_std': cv_std,
                 'cv_r2': cv_r2,
-                'valid_folds': valid_folds,
-                'total_folds': total_folds,
-                'consensus_params': z.copy()
+                'num_valid_agents': cv_aggregated['num_valid_agents'],
+                'total_agents': cv_aggregated['total_agents'],
+                'distributed_local_cv': True,
+                'consensus_params': z.copy(),
+                'agent_cv_results': cv_results_local
             })
             
         except Exception as e:
@@ -2710,9 +3959,11 @@ def main():
                 'consensus_cv_score': float('inf'),
                 'cv_score_std': float('inf'),
                 'cv_r2': -float('inf'),
-                'valid_folds': 0,
-                'total_folds': k_folds,
-                'consensus_params': z.copy()
+                'num_valid_agents': 0,
+                'total_agents': len(agent_data_splits),
+                'distributed_local_cv': True,
+                'consensus_params': z.copy(),
+                'agent_cv_results': []
             })
         
         # Calculate convergence metrics
@@ -2727,7 +3978,8 @@ def main():
         
         # Print hyperparameters comparison
         print(f"\nConsensus Parameters after iteration {iter}:")
-        print(f"Current consensus (z): {z}")
+        print(f"Current consensus z (circuit): {z[:-1]}")
+        print(f"Current consensus z (noise):   {z[-1]:.6f}")
         print(f"Best CV score so far: {cv_best:.6f}")
         if z_best_cv is not None:
             print(f"Best CV parameters: {z_best_cv}")
@@ -2738,17 +3990,12 @@ def main():
             print(f"Ground truth params: {ground_truth_params}")
             
             # Use fast Euclidean distance during optimization for speed
-            if use_riemannian:
-                # Use optimized Riemannian distance - much faster than manifold.distance()
-                param_error = fast_riemannian_distance(z, ground_truth_params)
-                euclidean_error = np.linalg.norm(z - ground_truth_params)
-                print(f"Riemannian distance ||z - ground_truth||: {param_error:.6f}")
-                print(f"Euclidean distance (for comparison): {euclidean_error:.6f}")
-            else:
-                # Use Euclidean distance for non-Riemannian optimization
-                param_error = np.linalg.norm(z - ground_truth_params)
-                euclidean_error = param_error
-                print(f"||z - ground_truth||: {param_error:.6f}")
+            # Only compare circuit parameters (z[:-1]) with ground_truth_params
+            # Use optimized Riemannian distance - much faster than manifold.distance()
+            param_error = fast_riemannian_distance(z[:-1], ground_truth_params)
+            euclidean_error = np.linalg.norm(z[:-1] - ground_truth_params)
+            print(f"Riemannian distance ||z_circuit - ground_truth||: {param_error:.6f}")
+            print(f"Euclidean distance (for comparison): {euclidean_error:.6f}")
                 
             # Best solution tracking (ground truth)
             error_history.append(float(np.round(param_error,4)))
@@ -2786,8 +4033,9 @@ def main():
     total_time = time.time() - admm_start_time
     print(f"\nTotal ADMM optimization time: {total_time:.4f}s")
     print(f"Average time per iteration: {total_time/iter:.4f}s")
-    print(f"Riemannian optimization with parameter shift gradients")
-    print(f"Parallel parameter evaluation: Enabled")
+    print("Gradient method used: riemannian")
+    print(f"Quantum differentiation method: {args.differentiation}")
+    print(f"Parallel parameter evaluation: {'Enabled' if use_parameter_shift else 'Disabled'}")
     
     # Final hyperparameters summary with CV-based optimization
     print(f"\n{'='*50}")
@@ -2795,9 +4043,11 @@ def main():
     print(f"{'='*50}")
     print(f"🎯 PRIMARY OPTIMIZATION METHOD: Cross-Validation (Realistic)")
     print(f"Best CV-NLPD score: {cv_best:.6f}")
-    print(f"Final consensus params: {z}")
+    print(f"Final consensus params (circuit): {z[:-1]}")
+    print(f"Final consensus params (noise):   {z[-1]:.6f}")
     if z_best_cv is not None:
-        print(f"Best CV params:         {z_best_cv}")
+        print(f"Best CV params (circuit): {z_best_cv[:-1]}")
+        print(f"Best CV params (noise):   {z_best_cv[-1]:.6f}")
         print(f"✅ CV-optimized parameters will be used for prediction")
     else:
         print(f"⚠️  No CV-optimized parameters available, using final iteration")
@@ -2806,18 +4056,14 @@ def main():
     if ground_truth_params is not None:
         print(f"\n📊 GROUND TRUTH ANALYSIS (for comparison only):")
         print(f"Ground truth params: {ground_truth_params}")
-        print(f"Best ADMM (z):     {z_best}")
-        print(f"Best ||z - ground_truth||: {error_best:.6f}")
+        print(f"Best ADMM (z circuit): {z_best[:-1]}")
+        print(f"Best ||z_circuit - ground_truth||: {error_best:.6f}")
         
-        # Calculate final error using appropriate distance metric
-        if use_riemannian:
-            final_error = fast_riemannian_distance(z, ground_truth_params)
-            euclidean_final_error = np.linalg.norm(z - ground_truth_params)
-            print(f"Final Riemannian distance: {final_error:.6f}")
-            print(f"Final Euclidean distance:  {euclidean_final_error:.6f}")
-        else:
-            final_error = np.linalg.norm(z - ground_truth_params)
-            print(f"Final ||z - ground_truth||: {final_error:.6f}")
+        # Calculate final error using appropriate distance metric (circuit params only)
+        final_error = fast_riemannian_distance(z[:-1], ground_truth_params)
+        euclidean_final_error = np.linalg.norm(z[:-1] - ground_truth_params)
+        print(f"Final Riemannian distance: {final_error:.6f}")
+        print(f"Final Euclidean distance:  {euclidean_final_error:.6f}")
             
         print(f"Parameter recovery: {'🎯 EXCELLENT!' if final_error < 1.0 else 'Good' if final_error < 3.0 else 'Needs improvement'}")
         print(f"Error history: {error_history}")
@@ -2827,11 +4073,7 @@ def main():
         
     print(f"\nFinal agent params (theta) - consensus check:")
     for i, theta_i in enumerate(theta):
-        if use_riemannian:
-            # Use fast Riemannian distance for consensus check
-            consensus_error = fast_riemannian_distance(z, theta_i)
-        else:
-            consensus_error = np.linalg.norm(z - theta_i)
+        consensus_error = fast_riemannian_distance(z, theta_i)
         print(f"  Agent {i+1}: {theta_i} (||z - theta_{i+1}||: {consensus_error:.6f})")
     print(f"{'='*50}")
     
@@ -3125,14 +4367,37 @@ def main():
     print(f"Hyperparameters source: {hyperparams_source}")
     print(f"Hyperparameters values: {hyperparams_to_use}")
     
+    # === STORE LOCAL COVARIANCE STATES FOR FACT-GP PREDICTION ===
+    print(f"\n{'='*60}")
+    print("COMPUTING LOCAL COVARIANCE STATES (FACT-GP)")
+    print(f"{'='*60}")
+    
+    agent_states = compute_and_store_agent_covariance_states(
+        agent_data_splits=agent_data_splits,
+        quantum_kernel_params=hyperparams_to_use,
+        num_qubits=num_qubits,
+        num_layers=num_layers,
+        noise_std=noise_std,
+        use_parameter_shift=use_parameter_shift,
+        encoding_type=args.encoding,
+        kernel_type=args.kernel_type,
+        measurement=args.measurement,
+        outer_kernel=outer_kernel,
+        outer_kernel_params=outer_kernel_params,
+        regularization=args.regularization
+    )
+    
     # Make predictions on test set
     try:
         print(f"\nMaking predictions on test set...")
         prediction_start_time = time.time()
         
-        y_pred_mean, y_pred_var, K_train, K_test_train, K_test_test = predict_quantum_gp(
+        # Use prediction method wrapper to route to appropriate aggregation method
+        y_pred_mean, y_pred_std, prediction_time_method, prediction_method_used = make_predictions_with_method(
+            prediction_method=args.prediction_method,
+            agent_states=agent_states,
             X_train=X_train,
-            Y_train=Y_train, 
+            Y_train=Y_train,
             X_test=X_test,
             quantum_kernel_params=hyperparams_to_use,
             num_qubits=num_qubits,
@@ -3144,11 +4409,46 @@ def main():
             measurement=args.measurement,
             outer_kernel=outer_kernel,
             outer_kernel_params=outer_kernel_params,
-            regularization=args.regularization
+            regularization=args.regularization,
+            y_train_std=y_train_std
         )
+        y_pred_var = y_pred_std ** 2
         
         prediction_time = time.time() - prediction_start_time
         print(f"Total prediction time: {prediction_time:.4f}s")
+        
+        # ===== DIAGNOSTIC CHECKS: Verify quantum kernel can represent full target range =====
+        print(f"\n{'='*70}")
+        print("DIAGNOSTIC: Kernel Expressiveness Check")
+        print(f"{'='*70}")
+        print(f"Target variable statistics:")
+        print(f"  Training Y range: [{Y_train.min():.6f}, {Y_train.max():.6f}]")
+        print(f"  Test Y range: [{Y_test.min():.6f}, {Y_test.max():.6f}]")
+        print(f"  Training Y std: {np.std(Y_train):.6f}")
+        
+        print(f"\nPrediction statistics:")
+        print(f"  Predicted Y range: [{y_pred_mean.min():.6f}, {y_pred_mean.max():.6f}]")
+        print(f"  Predicted Y std: {np.std(y_pred_mean):.6f}")
+        
+        # Calculate coverage
+        train_range = Y_train.max() - Y_train.min()
+        pred_range = y_pred_mean.max() - y_pred_mean.min()
+        test_range = Y_test.max() - Y_test.min()
+        coverage_vs_train = pred_range / train_range if train_range > 0 else 0
+        coverage_vs_test = pred_range / test_range if test_range > 0 else 0
+        
+        print(f"\nRange Coverage Analysis:")
+        print(f"  Training range: {train_range:.6f}")
+        print(f"  Test range: {test_range:.6f}")
+        print(f"  Prediction range: {pred_range:.6f}")
+        print(f"  Coverage vs training: {coverage_vs_train*100:.1f}%")
+        print(f"  Coverage vs test: {coverage_vs_test*100:.1f}%")
+        
+        if coverage_vs_train < 0.5:
+            print(f"  ⚠️  WARNING: Predictions cover only {coverage_vs_train*100:.1f}% of training range")
+            print(f"     This indicates kernel may be ill-conditioned or underfitting")
+        
+        print(f"{'='*70}\n")
         
         # Evaluate predictions
         print(f"\nEvaluating prediction quality...")
@@ -3159,13 +4459,22 @@ def main():
             dataset_type="Test"
         )
         
-        # Also evaluate on training set for comparison
+        # Also evaluate on training set for comparison (on subset to save time)
         print(f"\nEvaluating on training set for comparison...")
+        # Sample 100 random points from training set for faster evaluation with many agents
+        n_train_eval = min(100, len(X_train))
+        train_eval_indices = np.random.choice(len(X_train), size=n_train_eval, replace=False)
+        X_train_eval = X_train[train_eval_indices]
+        Y_train_eval = Y_train[train_eval_indices]
+        
         try:
-            y_train_pred_mean, y_train_pred_var, _, _, _ = predict_quantum_gp(
+            # Use prediction method wrapper for training set evaluation
+            y_train_pred_mean, y_train_pred_std, _, _ = make_predictions_with_method(
+                prediction_method=args.prediction_method,
+                agent_states=agent_states,
                 X_train=X_train,
                 Y_train=Y_train,
-                X_test=X_train,  # Predict on training data
+                X_test=X_train_eval,
                 quantum_kernel_params=hyperparams_to_use,
                 num_qubits=num_qubits,
                 num_layers=num_layers,
@@ -3176,14 +4485,16 @@ def main():
                 measurement=args.measurement,
                 outer_kernel=outer_kernel,
                 outer_kernel_params=outer_kernel_params,
-                regularization=args.regularization
+                regularization=args.regularization,
+                y_train_std=y_train_std
             )
+            y_train_pred_var = y_train_pred_std ** 2
             
             train_metrics = evaluate_predictions(
-                Y_true=Y_train,
+                Y_true=Y_train_eval,
                 Y_pred=y_train_pred_mean,
                 Y_pred_var=y_train_pred_var,
-                dataset_type="Training"
+                dataset_type="Training (subset)"
             )
             
         except Exception as e:
@@ -3196,14 +4507,11 @@ def main():
             print("GROUND TRUTH vs BEST TRAINED HYPERPARAMETERS COMPARISON")
             print(f"{'='*60}")
             
-            # Make predictions with ground truth hyperparameters
-            print(f"Making predictions with GROUND TRUTH hyperparameters...")
+            # Compute agent states using ground truth hyperparameters for comparison
+            print(f"\nComputing agent states with GROUND TRUTH hyperparameters...")
             try:
-                gt_prediction_start = time.time()
-                y_pred_gt_mean, y_pred_gt_var, _, _, _ = predict_quantum_gp(
-                    X_train=X_train,
-                    Y_train=Y_train, 
-                    X_test=X_test,
+                agent_states_gt = compute_and_store_agent_covariance_states(
+                    agent_data_splits=agent_data_splits,
                     quantum_kernel_params=ground_truth_params,
                     num_qubits=num_qubits,
                     num_layers=num_layers,
@@ -3216,6 +4524,54 @@ def main():
                     outer_kernel_params=outer_kernel_params,
                     regularization=args.regularization
                 )
+            except Exception as e:
+                print(f"Warning: Could not compute ground truth agent states: {e}")
+                agent_states_gt = None
+            
+            # Make predictions with ground truth hyperparameters
+            print(f"Making predictions with GROUND TRUTH hyperparameters...")
+            try:
+                gt_prediction_start = time.time()
+                if agent_states_gt is not None:
+                    # Use prediction method wrapper with ground truth agent states
+                    y_pred_gt_mean, y_pred_gt_std, gt_pred_time, _ = make_predictions_with_method(
+                        prediction_method=args.prediction_method,
+                        agent_states=agent_states_gt,
+                        X_train=X_train,
+                        Y_train=Y_train,
+                        X_test=X_test,
+                        quantum_kernel_params=ground_truth_params,
+                        num_qubits=num_qubits,
+                        num_layers=num_layers,
+                        noise_std=noise_std,
+                        use_parameter_shift=use_parameter_shift,
+                        encoding_type=args.encoding,
+                        kernel_type=args.kernel_type,
+                        measurement=args.measurement,
+                        outer_kernel=outer_kernel,
+                        outer_kernel_params=outer_kernel_params,
+                        regularization=args.regularization,
+                        y_train_std=y_train_std
+                    )
+                    y_pred_gt_var = y_pred_gt_std ** 2
+                else:
+                    # Fallback to original prediction function
+                    y_pred_gt_mean, y_pred_gt_var, _, _, _ = predict_quantum_gp(
+                        X_train=X_train,
+                        Y_train=Y_train, 
+                        X_test=X_test,
+                        quantum_kernel_params=ground_truth_params,
+                        num_qubits=num_qubits,
+                        num_layers=num_layers,
+                        noise_std=noise_std,
+                        use_parameter_shift=use_parameter_shift,
+                        encoding_type=args.encoding,
+                        kernel_type=args.kernel_type,
+                        measurement=args.measurement,
+                        outer_kernel=outer_kernel,
+                        outer_kernel_params=outer_kernel_params,
+                        regularization=args.regularization
+                    )
                 gt_prediction_time = time.time() - gt_prediction_start
                 print(f"Ground truth prediction time: {gt_prediction_time:.4f}s")
                 
@@ -3513,15 +4869,17 @@ def main():
                 'Agents': n_agents,
                 'Data Percentage': f"{args.data_percentage*100:.1f}%" if args.data_percentage < 1.0 else "100%",
                 'ADMM Iterations': iter,
-                'Optimization': 'Riemannian',
+                'Gradient Method': 'riemannian',
+                'Differentiation': args.differentiation,
                 'Encoding': args.encoding,
                 'Kernel Type': args.kernel_type,
+                'Prediction Method': args.prediction_method,
                 'Qubits': num_qubits,
                 'Layers': num_layers,
                 'Noise Std': f"{noise_std:.3f}",
                 'Shift Value': f"{shift_value:.4f}",
                 'Random Seed': args.seed,
-                'Riemannian': 'Yes' if use_riemannian else 'No',
+                'Riemannian': 'Yes',
                 'ADMM ρ (rho)': f"{rho:.1f}",
                 'Lipschitz Constants': f"[{', '.join([f'{l:.1f}' for l in L])}]" if len(L) <= 5 else f"[{L[0]:.1f}, ..., {L[-1]:.1f}] ({len(L)} agents)",
                 'Test R² Score': f"{test_metrics['r2']:.4f}",
@@ -3586,9 +4944,8 @@ def main():
                             param_strs.append(f"{key}={value}")
                     config_dict['Outer Kernel Params'] = f"{{{', '.join(param_strs)}}}"
             
-            if use_riemannian:
-                config_dict['Riem. Method'] = riemannian_method
-                config_dict['Riem. LR'] = f"{riemannian_lr:.4f}"
+            config_dict['Riem. Method'] = riemannian_method
+            config_dict['Riem. LR'] = f"{riemannian_lr:.4f}"
             
             # Prepare NLPD information for enhanced plotting
             nlpd_info = {}
@@ -3626,12 +4983,13 @@ def main():
         print(f"  Test samples: {X_test.shape[0]}")
         print(f"  Number of agents: {n_agents}")
         print(f"  ADMM iterations: {iter}")
-        print(f"  Optimization: Riemannian with parameter shift")
+        print("  Gradient method: riemannian")
+        print(f"  Quantum differentiation: {args.differentiation}")
         print(f"  Encoding: {args.encoding}")
         print(f"  Kernel type: {args.kernel_type}")
         if args.kernel_type == 'projected':
             print(f"  Measurement: {args.measurement}")
-        print(f"  Riemannian optimization: {'Enabled' if use_riemannian else 'Disabled'}")
+        print("  Riemannian optimization: Enabled")
         
         print(f"\nHyperparameter Optimization Results:")
         if ground_truth_params is not None:
@@ -3639,7 +4997,7 @@ def main():
             print(f"  Best found params:   {z_best}")
             print(f"  Final params:        {z}")
             print(f"  Best error:          {error_best:.6f}")
-            final_error = np.linalg.norm(z - ground_truth_params) 
+            final_error = np.linalg.norm(z[:-1] - ground_truth_params) 
             print(f"  Final error:         {final_error:.6f}")
             print(f"  Hyperparameter recovery: {'🎯 Excellent' if error_best < 1.0 else '✅ Good' if error_best < 3.0 else '⚠️ Moderate' if error_best < 5.0 else '❌ Poor'}")
         else:

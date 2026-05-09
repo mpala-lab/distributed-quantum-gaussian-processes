@@ -1,31 +1,12 @@
-# Core quantum ML framework
-squlearn==0.9.1
+# Core dependencies
+squlearn
+scikit-learn>=0.24.0
+numpy
 
-# Quantum computing backends
-qiskit==1.0.2
-qiskit-aer==0.14.2
-qiskit-algorithms==0.3.1
-qiskit-ibm-runtime==0.23.0
-qiskit-machine-learning==0.8.2
-pennylane==0.42.0
+# Real-world datasets functionality
+pandas>=1.3.0
+urllib3>=1.26.0
+requests>=2.25.0
 
-# Scientific computing
-numpy==2.2.6
-scipy==1.15.3
-scikit-learn==1.7.0
-
-# Data handling
-pandas==2.3.0
-
-# Visualization
-matplotlib==3.10.3
-
-# Web utilities (for dataset downloads)
-requests==2.32.5
-urllib3==2.5.0
-
-# Additional dependencies (required by squlearn)
-tqdm==4.67.1
-networkx==3.4.2
-dill==0.4.0
-bayesian-optimization==1.5.1
+# Optional: better plotting (usually already installed)
+matplotlib

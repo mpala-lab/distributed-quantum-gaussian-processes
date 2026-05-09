@@ -14,6 +14,36 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import train_test_split
 import warnings
 
+def get_encoding_feature_bounds(encoding_type='hubregtsen', nonlinearity='arccos'):
+    """
+    Get feature bounds for different quantum encoding circuits.
+    
+    Args:
+        encoding_type (str): Type of encoding circuit ('chebyshev', 'hubregtsen', 'yz_cx', etc.)
+        nonlinearity (str): For Chebyshev circuits, the nonlinearity type ('arccos' or 'arctan')
+    
+    Returns:
+        tuple: (min_bound, max_bound) for features
+    """
+    encoding_bounds = {
+        'chebyshev': (-1.0, 1.0) if nonlinearity == 'arccos' else (-np.inf, np.inf),  # arccos restricted
+        'hubregtsen': (-np.pi, np.pi),       # Data reuploading circuit
+        'yz_cx': (-np.pi, np.pi),            # Default
+        'kyriienko': (-np.pi, np.pi),        # Default
+        'multi_control': (-np.pi, np.pi),    # Default
+        'layered': (-np.pi, np.pi),          # Default
+        'random': (-np.pi, np.pi),           # Default
+        'highdim': (-np.pi, np.pi),          # Default
+    }
+    
+    bounds = encoding_bounds.get(encoding_type, (-np.pi, np.pi))  # Default to [-π, π]
+    
+    if bounds[1] == np.inf:
+        # Unbounded case (arctan) - return None or warn
+        return None
+    
+    return bounds
+
 def download_file_if_not_exists(url, filename, description="file"):
     """Download a file from URL if it doesn't exist locally."""
     if not os.path.exists(filename):
@@ -235,12 +265,12 @@ def load_robot_push_dataset(data_dir="./data", normalize=True, random_state=42,
     
     return X, Y
 
-def load_srtm_elevation_dataset(region='maharashtra', max_samples=5000, subsample_factor=10, normalize=True, random_state=42, save_plot=True, use_preprocessed=False):
+def load_srtm_elevation_dataset(region='maharashtra', max_samples=5000, subsample_factor=10, normalize=True, random_state=42, save_plot=True, use_preprocessed=False, encoding_type='hubregtsen', encoding_nonlinearity='arccos'):
     """
     Load real SRTM 30m elevation data from HGT files or preprocessed NumPy files for specific regions from Attentive Kernels paper.
     
     This implementation follows the exact data processing approach used in the Attentive Kernels paper:
-    - MinMaxScaler for coordinates (lat, lon) to range (-1, 1)
+    - Feature scaling to encoding circuit bounds (e.g., [-π, π] for Hubregtsen, [-1, 1] for Chebyshev arccos)
     - StandardScaler for elevation values
     - Proper negative outlier removal based on region characteristics
     - Support for the four benchmark regions: N17E073, N43W080, N45W123, N47W124
@@ -252,6 +282,8 @@ def load_srtm_elevation_dataset(region='maharashtra', max_samples=5000, subsampl
         normalize (bool): Whether to normalize the features and targets (following Attentive Kernels)
         random_state (int): Random seed for sampling
         use_preprocessed (bool): Whether to use preprocessed .npy files instead of raw HGT files (default: True)
+        encoding_type (str): Encoding circuit type to determine feature bounds (default: 'hubregtsen')
+        encoding_nonlinearity (str): For Chebyshev circuits, 'arccos' or 'arctan' (default: 'arccos')
     
     Returns:
         tuple: (X, Y) where X is (lat, lon) and Y is elevation
@@ -483,27 +515,40 @@ def load_srtm_elevation_dataset(region='maharashtra', max_samples=5000, subsampl
         if normalize:
             print(f"Applying Attentive Kernels normalization...")
             
-            # MinMaxScaler for coordinates to range (-1, 1) - exactly like Attentive Kernels
-            from sklearn.preprocessing import StandardScaler
+            # Get feature bounds for the specified encoding circuit
+            feature_bounds = get_encoding_feature_bounds(encoding_type, encoding_nonlinearity)
             
-            # Custom MinMaxScaler to (-1, 1) for coordinates (lat, lon)
+            if feature_bounds is None:
+                # Unbounded case - use default
+                print(f"Warning: Unbounded feature range for {encoding_type} with {encoding_nonlinearity}. Using default [-π, π]")
+                feature_bounds = (-np.pi, np.pi)
+            
+            feat_min, feat_max = feature_bounds
+            
+            from sklearn.preprocessing import StandardScaler, MinMaxScaler
+            
+            # Scale coordinates to encoding circuit feature bounds
             X_min = X.min(axis=0, keepdims=True)
             X_max = X.max(axis=0, keepdims=True)
             X_range = X_max - X_min
             
-            # Transform to (-1, 1) range
-            X_normalized = 2.0 * (X - X_min) / X_range - 1.0
+            # Transform to [feat_min, feat_max] range
+            X_normalized = feat_min + (feat_max - feat_min) * (X - X_min) / X_range
             
-            # StandardScaler for elevation values - exactly like Attentive Kernels  
-            Y_scaler = StandardScaler()
+            # MinMaxScaler for elevation values to keep non-negative (scale to [0, 1])
+            Y_scaler = MinMaxScaler(feature_range=(0, 1))
             Y_normalized = Y_scaler.fit_transform(Y.reshape(-1, 1)).flatten()
             
             X = X_normalized
             Y = Y_normalized
             
-            print(f"Applied normalization (Attentive Kernels style):")
-            print(f"  Coordinates (lat,lon): MinMaxScaler to (-1, 1)")
-            print(f"  Elevation: StandardScaler (mean=0, std=1)")
+            print(f"Applied normalization (Attentive Kernels style with {encoding_type} bounds):")
+            print(f"  Encoding circuit: {encoding_type}")
+            print(f"  Feature bounds detected: [{feat_min:.4f}, {feat_max:.4f}]")
+            if 'π' in f"{feat_min}":
+                print(f"  Feature bounds (symbolic): [-π, π]" if feat_max > 3.0 else f"  Feature bounds: {feature_bounds}")
+            print(f"  Coordinates (lat,lon): MinMaxScaler to ({feat_min:.3f}, {feat_max:.3f})")
+            print(f"  Elevation: MinMaxScaler to [0, 1] (non-negative)")
             print(f"  Normalized X range: [{X.min():.3f}, {X.max():.3f}]")
             print(f"  Normalized Y range: [{Y.min():.3f}, {Y.max():.3f}]")
             print(f"  Normalized Y: mean={Y.mean():.3f}, std={Y.std():.3f}")
@@ -736,7 +781,7 @@ def plot_real_world_dataset(X, Y, dataset_name='unknown', region=None, save_plot
                 plt.savefig(filepath, dpi=300, bbox_inches='tight')
                 print(f"Real-world dataset plot saved to: {filepath}")
             
-            plt.show()
+            # plt.show()
             
         elif input_dim == 3:
             # 3D dataset visualization with multiple projections
