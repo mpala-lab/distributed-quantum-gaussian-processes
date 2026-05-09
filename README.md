@@ -5,21 +5,17 @@ This project implements distributed quantum Gaussian process regression using AD
 ## 📁 Project Structure
 
 ```
-src/
-├── main.py                    # Main distributed QGPR with ADMM
-├── agent_riemannian.py       # Quantum agent with Riemannian optimization
-├── real_world_datasets.py    # 🌍 Real-world dataset loaders
-├── utils.py                   # Utility functions for aggregation
-├── requirements.txt           # Project dependencies
-├── run_quantum_hardware.py    # 🚀 Launcher for quantum hardware jobs
-└── quantum_hardware/          # 🚀 Quantum Hardware Module
-    ├── README_QUANTUM_HARDWARE.md     # Comprehensive documentation
-    ├── main_hardware_job.py           # Hardware job execution
-    ├── quantum_hardware_agent.py      # Hardware-optimized agent
-    ├── analyze_results.py             # Results analysis
-    ├── job_submission.py              # Job submission utilities
-    ├── hardware_config.py             # Backend configuration
-    └── quantum_requirements.txt       # Extended dependencies
+├── main.py                         # Main distributed QGPR with ADMM consensus
+├── agent_riemannian.py             # Quantum agent with Riemannian optimization
+├── riemannian_optimizer.py         # Manifold-aware optimization (torus geometry)
+├── real_world_datasets.py          # Real-world dataset loaders (SRTM, SST, kin40k, robot_push)
+├── requirements.txt                # Project dependencies
+├── README.md                       # Documentation and examples
+└── srtm_data/                      # Sample SRTM elevation datasets
+    ├── N17E073.hgt                 # Latitude 17°N, Longitude 73°E (Western Ghats - Maharashtra)
+    ├── N43W080.hgt                 # Latitude 43°N, Longitude 80°W (Great Lakes region)
+    ├── N45W123.hgt                 # Latitude 45°N, Longitude 123°W (Oregon Coast)
+    └── N47W124.hgt                 # Latitude 47°N, Longitude 124°W (Washington Coast)
 ```
 
 ## 🚀 Quick Start
