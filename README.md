@@ -183,192 +183,67 @@ Realistic datasets commonly used in GP research:
 
 | Feature | Description | Benefit |
 |---------|------------|---------|
-| **Multi-dimensional** | 1D, 2D, 3D, 8D support | Comprehensive evaluation |
-| **Real-World Datasets** | SST, Robot Push, Kinematics | Realistic GP benchmarks |
-| **Multiple Dataset Types** | Synthetic, Classical, Real-world | Flexible experimentation |
-| **ADMM Consensus** | Distributed parameter optimization | Scalable quantum GP |
-| **Gradient Method** | Riemannian optimization | Geometry-aware updates |
-| **Riemannian Optimization** | Geometry-aware parameter updates | Better convergence |
-| **Data Validation** | NaN/Inf detection and handling | Numerical stability |
-| **Reproducible** | Fixed random seeds | Consistent experiments |
+| **Riemannian Optimization** | Treats quantum circuit parameters as points on a torus manifold | Better convergence for periodic rotation parameters |
+| **Distributed ADMM** | Consensus-based parameter optimization across agents | Scalable quantum GP with privacy preservation |
+| **2D Focus** | Optimized for 2D spatial problems | Visualization and interpretability |
+| **Real SRTM Data** | Actual elevation measurements | Realistic GP benchmarks |
+| **Quantum Kernels** | Fidelity & Projected kernels with multiple encodings | Flexible quantum feature spaces |
+| **Cross-Validation** | NLPD-based model selection | Robust hyperparameter tuning |
 
-## 🎯 Command Line Options
+## ⚙️ Configuration Options
 
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| `--differentiation` | `autodiff` | Quantum diff: `autodiff` or `parameter_shift` |
-| `--input-dim` | `1` | Input dimensionality: 1, 2, or 3 |
-| `--n-train` | `60` | Number of training samples |
-| `--n-test` | `100` | Number of test samples |
-| `--test-split` | `0.2` | Test split ratio (0.0-1.0) |
-| `--n-agents` | `4` | Number of distributed agents |
-| `--num-qubits` | `4` | Number of qubits in quantum circuit |
-| `--partition` | `random` | Data partitioning: `random`, `sequential`, or `regional` |
-| `--max-iter` | `100` | Maximum ADMM iterations |
-| `--tolerance` | `1e-6` | ADMM convergence tolerance |
-| `--noise-std` | `0.1` | Noise standard deviation |
+### Key Parameters
 
-### Real-World Dataset Options 🌍
+- `--n-agents`: Number of distributed agents (default: 4)
+- `--num-qubits`: Quantum circuit qubits (default: 4)
+- `--num-layers`: Encoding circuit layers (default: 2)
+- `--encoding`: Circuit type - `chebyshev`, `hubregtsen`, `yz_cx`, `kyriienko`, etc.
+- `--kernel-type`: `fidelity` or `projected`
+- `--outer-kernel`: For projected kernels - `gaussian`, `matern`, `expsinesquared`, etc.
+- `--rho`: ADMM penalty parameter (default: 100.0)
+- `--L`: Lipschitz constant (default: 100.0)
 
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| `--real-world-dataset` | `None` | Dataset: `sst`, `robot_push`, `kin40k` |
-| `--dataset-max-samples` | `5000` | Maximum samples to load |
-| `--dataset-subsample` | `10` | Subsampling factor for large datasets |
-| `--dataset-normalize` | `True` | Normalize features and targets |
-| `--dataset-only` | `False` | Load dataset without training |
-| `--save-dataset` | `False` | Save dataset to CSV file |
-| `--dataset-name` | `quantum_dataset` | Name for saved dataset |
+### Riemannian Optimization
 
-### Alternative Dataset Names
-- **SST**: `sst`, `sea_surface_temperature`
-- **Robot Push**: `robot_push`, `robot`, `push`  
-- **Kinematics**: `kin40k`, `kinematics`
+- `--riemannian-method`: `gradient_descent`, `momentum`, or `conjugate_gradient`
+- `--riemannian-lr`: Learning rate (default: 0.015)
+- `--riemannian-beta`: Momentum/CG parameter (default: 0.9)
+- `--gradient-clip-norm`: Gradient clipping (default: 1.0)
+- `--max-step-size`: Maximum step size (default: 0.1)
 
-## 🔬 Implementation Details
+### Data Options
 
-### ADMM Consensus Algorithm
-1. **Local Training**: Each agent optimizes quantum kernel on local data
-2. **Parameter Sharing**: Agents exchange parameters via ADMM consensus  
-3. **Global Convergence**: Distributed optimization converges to global optimum
+- `--partition`: Data split method - `regional`, `random`, or `sequential`
+- `--test-split`: Test set ratio (default: 0.1)
+- `--noise-std`: Observation noise (default: 0.1)
+- `--dataset-normalize`: Normalize features and targets
 
-### Quantum Kernel
-- **Encoding**: ChebyshevPQC with configurable qubits and layers
-- **Kernel**: Fidelity kernel with expectation values
-- **Gradients**: Riemannian manifold-aware updates
+## 📊 Output
 
-### Data Pipeline
-```python
-# 1. Generate full dataset
-X_full, Y_full = generate_data_numpy(total_samples, input_dim, noise_std)
+The code generates:
+- Convergence plots for ADMM iterations
+- Prediction vs ground truth visualizations
+- Cross-validation NLPD scores
+- Agent-wise performance metrics
+- Kernel matrix condition numbers
 
-# 2. Train/test split  
-X_train, X_test, Y_train, Y_test = train_test_split(X_full, Y_full, test_size=0.2)
+## 🔬 Research Use
 
-# 3. Distribute among agents
-agent_data = split_data_numpy(X_train, Y_train, n_agents, method='random')
+This implementation is designed for research in:
+- Quantum machine learning
+- Distributed Gaussian processes
+- Riemannian optimization for quantum circuits
+- Spatial regression with quantum methods
+- ADMM consensus algorithms
 
-# 4. ADMM optimization
-for iteration in range(max_iter):
-    # Parallel agent training
-    results = ProcessPoolExecutor.map(agent_training, agent_data)
-    # Consensus update
-    z = average(theta + psi/rho)
+## 📝 Citation
+
+If you use this code in your research, please cite:
 ```
-
-## 📊 Expected Performance
-
-### Convergence Metrics
-- **Max ||z - theta_i||**: Distance between consensus and agent parameters
-- **||z_new - z_old||**: Change in consensus parameters
-- **Typical Convergence**: 10-50 iterations depending on problem complexity
-
-### Computational Complexity
+@inproceedings{gandhi2026distributed,
+  title={Distributed Quantum Gaussian Processes for Multi-Agent Systems},
+  author={Gandhi, Meet and Kontoudis, George P},
+  booktitle={International Conference on Autonomous Agents and Multiagent Systems (AAMAS)},
+  year={2026}
+}
 ```
-Time per iteration ∝ n_agents × (quantum_kernel_eval + matrix_ops)
-Memory usage ∝ n_samples² × n_hyperparameters  
-```
-
-### Scaling Guidelines
-| Dataset Type | Input Dim | Recommended Qubits | Training Samples | Agents |
-|--------------|-----------|-------------------|------------------|--------|
-| **Synthetic Functions** | 1D | 4-6 | 50-100 | 2-4 |
-| **Synthetic Functions** | 2D | 6-8 | 100-200 | 4-8 |  
-| **Synthetic Functions** | 3D | 8-12 | 150-300 | 4-8 |
-| **Real-World: SST** | 2D | 3-5 | 200-1000 | 2-4 |
-| **Real-World: Robot Push** | 3D | 4-6 | 300-800 | 3-5 |
-| **Real-World: Kinematics** | 8D | 6-8 | 500-1500 | 4-6 |
-
-## 🔧 Setup & Installation
-
-### Basic Requirements
-```bash
-pip install -r requirements.txt
-```
-
-### Core Dependencies
-- `squlearn`: Quantum machine learning framework
-- `numpy`, `scipy`: Numerical computing
-- `scikit-learn`: Data splitting and preprocessing
-- `pandas`: Data manipulation (for real-world datasets)
-- `urllib3`, `requests`: Data downloading (optional)
-- `concurrent.futures`: Parallel processing
-
-### Quantum Hardware Requirements (Optional)
-```bash
-pip install -r quantum_hardware/quantum_requirements.txt
-```
-
-For quantum hardware setup, see [`quantum_hardware/README_QUANTUM_HARDWARE.md`](quantum_hardware/README_QUANTUM_HARDWARE.md)
-
-## 🐛 Troubleshooting
-
-### Common Issues
-
-**NaN Gradients (2D functions)**:
-- Try simpler test function: uncomment alternative 2D function in `generate_data_numpy()`
-- Reduce noise: `--noise-std 0.05`
-- Check data validation: Look for "Warning" messages
-
-**Slow Convergence**:
-- Increase tolerance: `--tolerance 1e-5`
-- Reduce problem size: `--n-train 50`
-- Try different partitioning: `--partition sequential`
-
-**Memory Issues**:
-- Reduce training samples: `--n-train 30`
-- Fewer agents: `--n-agents 2`  
-- Lower dimensional input: `--input-dim 1`
-
-**Real-World Dataset Issues**:
-- Dataset loading errors: Check internet connection for data downloads
-- Memory issues with large datasets: Reduce `--dataset-max-samples`
-- Dimension mismatch: System automatically adjusts `--input-dim` to match dataset
-
-## 🌍 Real-World Dataset Examples
-
-### Quick Start Examples
-```bash
-# 2D spatial data - Sea Surface Temperature
-python main.py --real-world-dataset sst --dataset-max-samples 300 \
-               --dataset-normalize --encoding hubregtsen --kernel-type projected --num-layers 1 \
-               --num-qubits 3 --outer-kernel matern --rho 100 --L 100 --n-agents 4 \
-               --prediction-method gPoE --cv-patience 5 --noise-lower-bound 0.1 --max-iter 20
-
-# 3D robotics data - Robot Push
-python main.py --real-world-dataset robot_push --dataset-max-samples 200 \
-               --encoding hubregtsen --kernel-type projected --num-layers 1 \
-               --num-qubits 3 --outer-kernel matern --rho 100 --L 100 --n-agents 4 \
-               --prediction-method gPoE --cv-patience 5 --noise-lower-bound 0.1 --max-iter 15
-
-# 8D high-dimensional - Robot Kinematics  
-python main.py --real-world-dataset kin40k --dataset-max-samples 400 \
-               --encoding hubregtsen --kernel-type projected --num-layers 1 \
-               --num-qubits 3 --outer-kernel matern --rho 100 --L 100 --n-agents 4 \
-               --prediction-method gPoE --cv-patience 5 --noise-lower-bound 0.1 --max-iter 25
-```
-
-### Performance Benchmarks
-Expected performance on real-world datasets:
-
-| Dataset | Samples | Qubits | Agents | Iterations | Typical R² | Training Time |
-|---------|---------|--------|--------|------------|------------|---------------|
-| SST (2D) | 500 | 3 | 2 | 20 | 0.85-0.95 | 2-5 min |
-| Robot Push (3D) | 300 | 4 | 3 | 15 | 0.80-0.90 | 3-8 min |
-| Kinematics (8D) | 400 | 6 | 4 | 25 | 0.75-0.85 | 5-15 min |
-
-*Performance varies based on hardware and specific dataset characteristics.*
-
-## 🚀 For Quantum Advantage
-
-Use the `quantum_hardware/` module for **TRUE QUANTUM ADVANTAGE** on real quantum hardware:
-
-```bash
-python run_quantum_hardware.py
-```
-
-Expected speedup: **3-10x faster** on real quantum hardware vs. simulation.
-
----
-
-**🎯 Ready to test quantum GP on optimization benchmarks? Start with the examples above!**
